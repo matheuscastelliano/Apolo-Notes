@@ -1,0 +1,22 @@
+# Ambiente
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Empacotamento
+build/
+dist/
+*.spec
+
+# Nada de configuracao local no repositorio: a de verdade mora em
+# %APPDATA%\Apolo e a API key no Gerenciador de Credenciais.
+config.json
+presets.json
+*.log
+
+# Audio nunca entra no repositorio. O sample.wav do spike e sintetico e
+# regeneravel (spike/make_sample.py).
+*.wav
+*.flac
+spike/out/

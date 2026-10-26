@@ -1,0 +1,22 @@
+openai>=3.0
+numpy>=2.0
+# Mic, como no Artemis.
+sounddevice>=0.5
+# Loopback do audio do sistema (WASAPI no Windows, monitor do PulseAudio/
+# PipeWire no Linux). Escolhido na fase 0: entrega zeros em silencio em vez
+# de travar, ao contrario do PyAudioWPatch. Ver spike/RESULTADOS.md.
+soundcard>=0.4.6
+soxr>=1.0
+# Silero VAD em ggml: sem torch e sem onnxruntime.
+pysilero-vad>=3.4
+# FLAC para a opcao "salvar audio".
+soundfile>=0.13
+pystray>=0.19.5
+Pillow>=10.0
+keyring>=24.0
+
+# Windows: hook de teclado para o atalho opcional.
+pynput>=1.7.6; sys_platform == "win32"
+
+# Linux: atalho por /dev/input (o pynput nao enxerga teclas sob Wayland).
+evdev>=1.6; sys_platform == "linux"

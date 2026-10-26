@@ -1,0 +1,15 @@
+"""Atalho para rodar o Apolo sem janela de console.
+
+Duplo clique neste arquivo (se .pyw estiver associado ao pythonw.exe) ou use
+o Apolo.cmd, que ja aponta para o Python do .venv. No Linux e o alvo do
+atalho no menu de aplicativos, que passa --settings na acao 'Configuracoes'.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from apolo.__main__ import main  # noqa: E402
+
+raise SystemExit(main())  # argumentos vem de sys.argv (ver --settings)

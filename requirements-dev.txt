@@ -1,0 +1,6 @@
+-r requirements.txt
+pytest>=8.0
+# So para os scripts de spike/ (fase 0).
+PyAudioWPatch; sys_platform == "win32"
+webrtcvad-wheels
+pycaw; sys_platform == "win32"
