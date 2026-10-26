@@ -47,3 +47,7 @@ class NoteError(ApoloError):
 
 class HotkeyError(ApoloError):
     """Combinacao de teclas invalida ou em conflito."""
+
+
+class SpoolError(ApoloError):
+    """Falha ao escrever ou ler o spool (disco cheio, sem permissao...)."""
