@@ -255,9 +255,22 @@ class MicSource(_Source):
 
 
 class SystemSource(_Source):
-    """Loopback da saida padrao (ou da do config, por nome) via soundcard."""
+    """Loopback da saida padrao (ou da do config, por nome) via soundcard.
+
+    Segue a saida padrao (risco R3 do PLANO.md): se voce conecta o fone no
+    meio da reuniao e o Windows passa a tocar nele, o loopback antigo ficaria
+    ouvindo a caixa muda. A cada DEFAULT_CHECK_SECONDS ele confere a saida
+    padrao e, se mudou, reabre o loopback na nova. O buraco de ~0,1 s na
+    troca o relogio do pipeline cobre. Com `loopback_device` fixo no config
+    nao ha o que seguir.
+    """
 
     channel = "sys"
+    DEFAULT_CHECK_SECONDS = 2.0
+
+    def __init__(self, on_block: BlockCallback, device: str | None = None):
+        super().__init__(on_block, device)
+        self.switches = 0  # quantas vezes trocou de saida no meio
 
     def _speaker(self, sc):
         if self.device:
@@ -273,11 +286,17 @@ class SystemSource(_Source):
     def _run(self) -> None:
         try:
             sc = _soundcard()
-            speaker = self._speaker(sc)
+        except Exception as exc:
+            raise AudioError(t("err.loopback_open"), str(exc)) from exc
+        while not self._stop.is_set():
+            # Volta aqui so quando a saida padrao muda; o resto sai do metodo.
+            self._record(sc, self._speaker(sc))
+
+    def _record(self, sc, speaker) -> None:
+        """Grava do loopback de `speaker` ate parar ou a saida padrao mudar."""
+        try:
             self.device_name = speaker.name
             loopback = sc.get_microphone(id=str(speaker.name), include_loopback=True)
-        except AudioError:
-            raise
         except Exception as exc:
             raise AudioError(t("err.loopback_open"), str(exc)) from exc
 
@@ -288,6 +307,7 @@ class SystemSource(_Source):
             recorder.__enter__()
         except Exception as exc:
             raise AudioError(t("err.loopback_open"), str(exc)) from exc
+        next_check = time.monotonic() + self.DEFAULT_CHECK_SECONDS
         try:
             while not self._stop.is_set():
                 try:
@@ -296,8 +316,24 @@ class SystemSource(_Source):
                     raise AudioError(t("err.loopback_lost"), str(exc)) from exc
                 t_arrival = time.monotonic()
                 self._deliver(t_arrival, resampler.process(data))
+                if self.device is None and t_arrival >= next_check:
+                    next_check = t_arrival + self.DEFAULT_CHECK_SECONDS
+                    if self._default_changed(sc, speaker):
+                        return
         finally:
             try:
                 recorder.__exit__(None, None, None)
             except Exception:
                 pass
+
+    def _default_changed(self, sc, current) -> bool:
+        try:
+            default = sc.default_speaker()
+        except Exception:
+            return False  # consulta falhou agora; tenta na proxima
+        if default is None or default.name == current.name:
+            return False
+        log.info("Saida padrao mudou: '%s' -> '%s'; reabrindo o loopback.",
+                 current.name, default.name)
+        self.switches += 1
+        return True

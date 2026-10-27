@@ -86,6 +86,12 @@ class SessionStatus:
     # Em DONE: o resumo falhou, mas a nota (com a transcricao) foi salva.
     summary_error: ApoloError | None = None
     note_path: Path | None = None
+    # "Pausar meu microfone" ligado.
+    mic_paused: bool = False
+    # Minutos sem fala nenhuma nos dois canais, quando passa do alerta (0 = ok).
+    silent_minutes: int = 0
+    # Gravando ha mais que `max_session_hours`: o app para sozinho.
+    limit_reached: bool = False
 
 
 class AudioKeeper:
@@ -161,6 +167,10 @@ class MeetingSession:
         self._sources: list = []
         self._pipelines: dict[str, ChannelPipeline] = {}
         self._audio: AudioKeeper | None = None
+        self.mic_paused = False
+        self.silent_minutes = 0
+        self.limit_reached = False
+        self._last_speech: float | None = None
         self._t0 = 0.0
         self._dirty = threading.Event()
         self._stop_note = threading.Event()
@@ -301,12 +311,44 @@ class MeetingSession:
         self.phase = ERROR
 
     def _feeder(self, channel: str):
+        pipeline = self._pipelines[channel]
+
         def on_block(t_arrival: float, block) -> None:
+            if channel == "mic" and self.mic_paused:
+                # Silencio no lugar do audio, e nao "nada": o relogio do canal
+                # segue andando e o FLAC (se ligado) nao guarda o que foi dito.
+                block = block * 0
             if self._audio is not None:
                 self._audio.write(channel, block)
-            self._handle(self._pipelines[channel].push(t_arrival, block))
+            before = pipeline.speech_seconds
+            self._handle(pipeline.push(t_arrival, block))
+            if pipeline.speech_seconds > before:
+                self._last_speech = time.monotonic()
 
         return on_block
+
+    # ------------------------------------------------------- mic e travas
+
+    def set_mic_paused(self, paused: bool) -> None:
+        """Voce mutou no Teams? Pause aqui tambem: o mic para de ser transcrito."""
+        if self.phase != RECORDING:
+            return
+        self.mic_paused = bool(paused)
+        log.info("Mic %s", "pausado" if self.mic_paused else "retomado")
+        self._emit(force=True)
+
+    def check_limits(self, now: float | None = None) -> None:
+        """Alerta de silencio e teto de duracao. Chamado pela thread `note`."""
+        if self.phase != RECORDING or self.started_at is None:
+            return
+        now = time.monotonic() if now is None else now
+        alert = float(self.config.get("silence_alert_minutes") or 0) * 60
+        quiet = now - max(self._last_speech or 0.0, self.started_at)
+        self.silent_minutes = int(quiet // 60) if alert > 0 and quiet >= alert else 0
+        limit = float(self.config.get("max_session_hours") or 0) * 3600
+        if limit > 0 and now - self.started_at >= limit and not self.limit_reached:
+            log.warning("Teto de %.1f h atingido; parando sozinho.", limit / 3600)
+            self.limit_reached = True
 
     def _handle(self, chunks: list[Chunk]) -> None:
         for chunk in chunks:
@@ -430,6 +472,7 @@ class MeetingSession:
             self._dirty.wait(0.5)
             if self._stop_note.is_set():
                 break
+            self.check_limits()
             self._emit()
             if not self._dirty.is_set():
                 continue
@@ -470,6 +513,9 @@ class MeetingSession:
             error=error or (q.fatal if q else None),
             summary_error=self.summary_error,
             note_path=self.writer.path if self.writer else None,
+            mic_paused=self.mic_paused and self.phase == RECORDING,
+            silent_minutes=self.silent_minutes if self.phase == RECORDING else 0,
+            limit_reached=self.limit_reached,
         )
         if not force and status == self._last_status:
             return

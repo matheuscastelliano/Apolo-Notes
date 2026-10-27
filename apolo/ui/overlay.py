@@ -3,8 +3,9 @@
 Veio do Artemis. La o motivo do WS_EX_NOACTIVATE era a colagem; aqui e a
 reuniao: clicar em Iniciar nao pode tirar o foco da janela do Teams/Meet.
 
-Diferenca para o Artemis: durante a gravacao o titulo muda a cada segundo
-(o cronometro). `set_title` troca so o texto, sem reposicionar nem piscar.
+Diferencas para o Artemis: durante a gravacao o titulo muda a cada segundo
+(o cronometro) - `set_title` troca so o texto, sem reposicionar nem piscar -
+e clicar no indicador abre a nota.
 """
 
 from __future__ import annotations
@@ -33,9 +34,10 @@ _DIM = "#98989d"
 class Overlay:
     """Uma janelinha sem borda no canto inferior direito."""
 
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, on_click=None):
         self._root = root
         self._hide_job: str | None = None
+        self._on_click = on_click
 
         self._win = tk.Toplevel(root)
         self._win.withdraw()
@@ -63,6 +65,13 @@ class Overlay:
             text_frame, text="", bg=_BG, fg=_DIM, font=("Segoe UI", 9), wraplength=340,
             justify="left",
         )
+
+        # Clique em qualquer parte: o NOACTIVATE deixa clicar sem tirar o foco
+        # da janela da reuniao.
+        if on_click is not None:
+            for widget in (self._win, frame, self._dot, text_frame, self._title, self._detail):
+                widget.bind("<Button-1>", lambda _e: self._on_click())
+                widget.configure(cursor="hand2")
 
         self._apply_noactivate()
 

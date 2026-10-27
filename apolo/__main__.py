@@ -142,7 +142,22 @@ def format_elapsed(seconds: float) -> str:
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
 
 
+def enable_dpi_awareness() -> None:
+    """Sem isto, numa tela com escala (125%, 150%) o Windows estica a janela
+    do Tk como bitmap e o texto fica borrado."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # por monitor
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # Windows antigo
+        except Exception:
+            pass
+
+
 def run_app(open_settings: bool = False) -> int:
+    enable_dpi_awareness()
     root = tk.Tk()
     root.withdraw()
     root.title("Apolo")
@@ -152,7 +167,8 @@ def run_app(open_settings: bool = False) -> int:
         "Erro em callback do Tkinter", exc_info=args
     )
 
-    overlay = Overlay(root)
+    # Clicar no indicador abre a nota (ao vivo durante a reuniao).
+    overlay = Overlay(root, on_click=lambda: open_last_note())
     tray: Tray | None = None
     # Sessao em andamento, para o cronometro: (nome do preset, inicio).
     clock: dict = {"preset": "", "started_at": None, "job": None}
@@ -187,6 +203,8 @@ def run_app(open_settings: bool = False) -> int:
 
         if tray is not None:
             tray.set_status(status.kind, title)
+            if status.notify:
+                tray.notify(t("tray.tooltip"), status.notify)
         if _overlay_wanted(controller.config, status.kind):
             overlay.show(status.kind, title, status.detail)
         else:
@@ -213,6 +231,7 @@ def run_app(open_settings: bool = False) -> int:
         on_saved=controller.reload,
         on_reload=controller.reload,
         on_open_folder=lambda: open_folder(config_module.config_dir()),
+        is_recording=lambda: controller.busy,
     )
 
     def open_notes() -> None:

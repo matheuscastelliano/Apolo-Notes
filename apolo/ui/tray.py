@@ -9,6 +9,7 @@ thread, e todo callback que mexa em UI volta para a main via root.after().
 O menu:
   Gravando ha 00:12 (Daily)        <- estado, nao clicavel
   Iniciar gravacao (Geral)         <- item default: liga/desliga
+  [x] Pausar meu microfone         <- so durante a gravacao
   Iniciar com o tipo de resumo  >  <- um item por preset
   Abrir ultima nota                <- depois da primeira gravacao
   Abrir pasta das notas
@@ -100,6 +101,12 @@ class Tray:
             # Preparando ou terminando de transcrever: nao ha o que alternar.
             enabled=lambda item: self._controller.can_stop or not self._controller.busy,
         )
+        if self._controller.can_stop:
+            yield pystray.MenuItem(
+                t("tray.pause_mic"),
+                lambda icon=None, item=None: self._controller.toggle_mic_pause(),
+                checked=lambda item: self._controller.mic_paused,
+            )
         yield pystray.MenuItem(
             t("tray.start_with"),
             pystray.Menu(self._preset_items),

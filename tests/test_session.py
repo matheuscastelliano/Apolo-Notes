@@ -278,11 +278,13 @@ class FakePipeline:
     def __init__(self, channel, config, t0, vad=None):
         self.channel = channel
         self.t = 0.0
+        self.speech_seconds = 0.0
 
     def push(self, t_arrival, block):
         start, self.t = self.t, self.t + len(block) / SR
         if not np.any(block):
             return []
+        self.speech_seconds += len(block) / SR
         pcm16 = (block * 32767).astype(np.int16)
         return [Chunk(self.channel, start, self.t, len(block) / SR, pcm16)]
 

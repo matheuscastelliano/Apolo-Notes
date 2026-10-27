@@ -51,6 +51,7 @@ log = logging.getLogger(__name__)
 # Id do unico atalho do Apolo no HotkeyManager (que vem do Artemis e aceita
 # varios, um por preset).
 _TOGGLE_ID = "toggle"
+_PAUSE_ID = "pause_mic"
 
 
 class State(Enum):
@@ -71,6 +72,8 @@ class Status:
     # a UI montar o cronometro sozinha sem o controller emitir a cada segundo.
     preset: str = ""
     started_at: float | None = None
+    # Aviso que tambem vai como notificacao do sistema (silencio, teto).
+    notify: str = ""
 
 
 StatusCallback = Callable[[Status], None]
@@ -92,6 +95,8 @@ class AppController:
         # Ultima nota escrita, para o "Abrir ultima nota" da bandeja.
         self.last_note: Path | None = None
         self._hotkeys = HotkeyManager(self._on_hotkey_event)
+        # Ultimo alerta de silencio ja notificado, para nao repetir a cada minuto.
+        self._silence_notified = 0
 
     # ------------------------------------------------------- ciclo de vida
 
@@ -127,13 +132,18 @@ class AppController:
             self._emit(Status("error", exc.message, exc.detail or ""))
 
         self._hotkeys.clear()
-        hotkey = (self.config.get("hotkey") or "").strip()
-        if hotkey:
+        problems = []
+        for hotkey_id, key in ((_TOGGLE_ID, "hotkey"), (_PAUSE_ID, "pause_hotkey")):
+            spec = (self.config.get(key) or "").strip()
+            if not spec:
+                continue
             try:
-                self._hotkeys.register(_TOGGLE_ID, hotkey, "toggle")
+                self._hotkeys.register(hotkey_id, spec, "toggle")
             except ApoloError as exc:
-                self._emit(Status("error", t("err.hotkey_problems"), exc.message))
-                return
+                problems.append(exc.message)
+        if problems:
+            self._emit(Status("error", t("err.hotkey_problems"), "; ".join(problems)))
+            return
 
         # Recarregar no meio de uma reuniao nao pode apagar o "Gravando".
         if self._state is State.IDLE:
@@ -170,11 +180,25 @@ class AppController:
     def can_stop(self) -> bool:
         return self._state is State.RECORDING
 
+    @property
+    def mic_paused(self) -> bool:
+        session = self._session
+        return bool(session and session.mic_paused)
+
+    def toggle_mic_pause(self) -> None:
+        session = self._session
+        if session is not None and self._state is State.RECORDING:
+            session.set_mic_paused(not session.mic_paused)
+
     # ------------------------------------------------------------ comandos
 
     def _on_hotkey_event(self, hotkey_id: str, event: str) -> None:
-        if hotkey_id == _TOGGLE_ID and event == "activate":
+        if event != "activate":
+            return
+        if hotkey_id == _TOGGLE_ID:
             self.toggle()
+        elif hotkey_id == _PAUSE_ID:
+            self.toggle_mic_pause()
 
     def toggle(self) -> None:
         if self.busy:
@@ -205,13 +229,15 @@ class AppController:
             self._session = None
             self._fail(exc, "Falha ao iniciar a sessao")
 
-    def finish(self) -> None:
+    def finish(self, ask: bool = True) -> None:
+        """Para a gravacao. `ask=False` (teto de duracao) pula a janela:
+        ninguem esta olhando, e o resumo nao pode ficar esperando um clique."""
         with self._lock:
             if self._state is not State.RECORDING or self._session is None:
                 return  # preparando ou ja finalizando: nada a fazer
             self._state = State.FINISHING
             session = self._session
-        choice = self._request_choice(session)
+        choice = self._request_choice(session, ask)
         self._spawn("session-stop", self._finish_session, session, choice, True)
 
     def _finish_session(self, session: MeetingSession, choice: "_Choice", stop: bool) -> None:
@@ -230,10 +256,10 @@ class AppController:
             if self._session is session:
                 self._session = None
 
-    def _request_choice(self, session: MeetingSession) -> "_Choice":
+    def _request_choice(self, session: MeetingSession, ask: bool = True) -> "_Choice":
         """Abre a janela de parada (ou nao, com on_stop = auto)."""
         choice = _Choice(FinalizeChoice(session.preset))
-        if self.config.get("on_stop") == "auto" or self._ask_finalize is None:
+        if not ask or self.config.get("on_stop") == "auto" or self._ask_finalize is None:
             choice.set(choice.default)
             return choice
         if session.started_at is not None:  # acabou de parar: stop() ainda nao mediu
@@ -325,8 +351,19 @@ class AppController:
             with self._lock:
                 if self._state is State.PREPARING:
                     self._state = State.RECORDING
+                    self._silence_notified = 0
+            notify = ""
+            if s.limit_reached:
+                notify = t("status.limit_reached", hours=self.config.get("max_session_hours"))
+            elif s.silent_minutes and self._silence_notified == 0:
+                self._silence_notified = s.silent_minutes
+                notify = t("status.silent", minutes=s.silent_minutes)
+            elif not s.silent_minutes:
+                self._silence_notified = 0
             self._emit(Status("recording", detail=_recording_detail(s),
-                              preset=s.preset, started_at=s.started_at))
+                              preset=s.preset, started_at=s.started_at, notify=notify))
+            if s.limit_reached:
+                self.finish(ask=False)
         elif s.phase == DRAINING:
             self._emit(Status("processing", t("status.draining"), _queue_detail(s)))
         elif s.phase == READY:
@@ -414,6 +451,10 @@ def _queue_detail(s: SessionStatus) -> str:
 
 def _recording_detail(s: SessionStatus) -> str:
     parts = []
+    if s.mic_paused:
+        parts.append(t("status.mic_paused"))
+    if s.silent_minutes:
+        parts.append(t("status.silent", minutes=s.silent_minutes))
     for channel in s.channel_problems:
         parts.append(t(f"status.channel_down.{channel}"))
     # Fila normal (1-2 trechos) nao interessa; so quando esta acumulando.

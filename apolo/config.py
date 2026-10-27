@@ -79,6 +79,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # A bandeja e o caminho principal; no Linux o atalho evdev pode brigar
     # com o do Artemis, por isso nao ha um por padrao.
     "hotkey": None,
+    # Atalho opcional para "Pausar meu microfone" (mutou no Teams? pause aqui).
+    "pause_hotkey": None,
     # always | errors | never - ver OVERLAY_MODES.
     "overlay_mode": "always",
     # Idioma da INTERFACE. "auto" segue o idioma do sistema.
