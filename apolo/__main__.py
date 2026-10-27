@@ -9,6 +9,7 @@ Ferramentas do pipeline de audio (fase 2, nao chamam a API):
     python -m apolo --devices               # mics e saidas (loopback), por nome
     python -m apolo --test-capture [20]     # grava mic + loopback e mostra os cortes
     python -m apolo --from-wav arquivo.wav  # passa um WAV pelo VAD + chunker
+    python -m apolo --simulate arquivo.wav  # reuniao de mentira, com STT de verdade
 
 Modelo de threads (fase 1):
     main       -> Tkinter (overlay + janela de configuracao + cronometro)
@@ -120,6 +121,14 @@ def open_folder(path: Path) -> None:
         subprocess.Popen(["explorer", str(path)])
 
 
+def open_file(path: Path) -> None:
+    """Abre a nota no programa padrao para .md (Obsidian, VS Code...)."""
+    if sys.platform != "win32":
+        subprocess.Popen(["xdg-open", str(path)])
+        return
+    os.startfile(path)  # type: ignore[attr-defined]
+
+
 def format_elapsed(seconds: float) -> str:
     seconds = int(max(0, seconds))
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
@@ -196,6 +205,15 @@ def run_app(open_settings: bool = False) -> int:
         except OSError as exc:
             apply_status(Status("error", t("err.notes_dir"), str(exc)))
 
+    def open_last_note() -> None:
+        path = controller.last_note
+        if path is None:
+            return
+        try:
+            open_file(path)
+        except OSError as exc:
+            apply_status(Status("error", t("err.note_open"), str(exc)))
+
     def quit_app() -> None:
         log.info("Encerrando.")
         controller.shutdown()
@@ -209,6 +227,7 @@ def run_app(open_settings: bool = False) -> int:
     tray = Tray(
         controller,
         on_open_notes=lambda: root.after(0, open_notes),
+        on_open_last_note=lambda: root.after(0, open_last_note),
         on_settings=lambda: root.after(0, settings.open),
         on_quit=lambda: root.after(0, quit_app),
     )
@@ -293,6 +312,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--from-wav", metavar="ARQUIVO", help="passa um WAV pelo VAD + chunker"
     )
+    parser.add_argument(
+        "--simulate", metavar="ARQUIVO",
+        help="reuniao de mentira: o WAV entra como 'Outros', com transcricao de verdade",
+    )
+    parser.add_argument(
+        "--speed", type=float, default=1.0, help="com --simulate: le o WAV N vezes mais rapido"
+    )
     args = parser.parse_args(argv)
 
     setup_logging(args.debug)
@@ -316,6 +342,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.from_wav:
             return audio_cli.cmd_from_wav(config, args.from_wav)
         return audio_cli.cmd_test_capture(config, args.test_capture, args.keep_spool)
+
+    if args.simulate:
+        from .session.simulate import cmd_simulate
+
+        try:
+            presets = config_module.load_presets()
+        except ApoloError as exc:
+            print(exc)
+            return 1
+        return cmd_simulate(config, presets, args.simulate, args.speed)
 
     if not claim_single_instance():
         if sys.platform != "win32":

@@ -10,6 +10,7 @@ O menu:
   Gravando ha 00:12 (Daily)        <- estado, nao clicavel
   Iniciar gravacao (Geral)         <- item default: liga/desliga
   Iniciar com o tipo de resumo  >  <- um item por preset
+  Abrir ultima nota                <- depois da primeira gravacao
   Abrir pasta das notas
   Configuracoes...
   Sair
@@ -62,6 +63,7 @@ class Tray:
         controller,
         *,
         on_open_notes: Callable[[], None],
+        on_open_last_note: Callable[[], None],
         on_settings: Callable[[], None],
         on_quit: Callable[[], None],
     ):
@@ -71,6 +73,7 @@ class Tray:
         self._icons = {kind: make_icon(color) for kind, color in _COLORS.items()}
 
         self._on_open_notes = on_open_notes
+        self._on_open_last_note = on_open_last_note
         self._on_settings = on_settings
         self._on_quit = on_quit
         self._thread: threading.Thread | None = None
@@ -87,13 +90,21 @@ class Tray:
     def _menu_items(self):
         yield pystray.MenuItem(_menu_text(self._status_text), None, enabled=False)
         yield pystray.Menu.SEPARATOR
-        yield pystray.MenuItem(self._toggle_label(), self._toggle, default=True)
+        yield pystray.MenuItem(
+            self._toggle_label(),
+            self._toggle,
+            default=True,
+            # Preparando ou terminando de transcrever: nao ha o que alternar.
+            enabled=lambda item: self._controller.can_stop or not self._controller.busy,
+        )
         yield pystray.MenuItem(
             t("tray.start_with"),
             pystray.Menu(self._preset_items),
             enabled=lambda item: not self._controller.busy,
         )
         yield pystray.Menu.SEPARATOR
+        if self._controller.last_note is not None:
+            yield pystray.MenuItem(t("tray.open_last_note"), self._on_open_last_note)
         yield pystray.MenuItem(t("tray.open_notes"), self._on_open_notes)
         yield pystray.MenuItem(t("tray.settings"), self._on_settings)
         yield pystray.Menu.SEPARATOR
@@ -110,8 +121,10 @@ class Tray:
             )
 
     def _toggle_label(self) -> str:
-        if self._controller.busy:
+        if self._controller.can_stop:
             return t("tray.toggle.stop")
+        if self._controller.busy:
+            return t("tray.toggle.wait")
         preset = self._controller.default_preset()
         return _menu_text(t("tray.toggle.start", name=preset.name if preset else ""))
 

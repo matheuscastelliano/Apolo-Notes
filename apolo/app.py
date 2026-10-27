@@ -1,11 +1,14 @@
 """AppController: liga a UI (bandeja, overlay, atalho) a sessao de gravacao.
 
-    IDLE --iniciar--> RECORDING --parar--> IDLE
+    IDLE --iniciar--> PREPARING --fontes abertas--> RECORDING
+      ^                                                 |
+      +------- nota pronta / erro <------ DRAINING <--parar
 
-Fase 1: a sessao ainda e um esqueleto - iniciar so liga o cronometro e
-parar so volta para IDLE. A captura (fase 2), a transcricao (fase 3) e o
-resumo (fase 4) entram em session/, e os estados PREPARING, DRAINING e
-FINALIZING do PLANO.md entram junto com eles.
+A sessao em si (captura, spool, fila de STT, nota ao vivo) mora em
+session/session.py. Aqui so ficam o estado que a UI enxerga, a traducao do
+SessionStatus para o Status do overlay/bandeja e as threads que impedem a
+UI de travar: abrir as fontes leva ate ~5 s (Bluetooth) e esperar a fila no
+fim pode levar o tempo que a internet demorar para voltar.
 
 Regra herdada do Artemis: nenhuma excecao pode derrubar o app. Um erro vira
 um aviso no overlay e volta para IDLE.
@@ -15,17 +18,21 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable
 
 from . import config as config_module
 from . import startup
-from .errors import ApoloError
+from .errors import ApoloError, CredentialsError
 from .hotkeys import HotkeyManager
 from .i18n import t
 from .presets import SummaryPreset
+from .providers.openai_provider import OpenAIProvider
+from .secrets_store import get_api_key
+from .session.session import DONE, DRAINING, ERROR, PREPARING, RECORDING
+from .session.session import MeetingSession, SessionStatus
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +43,9 @@ _TOGGLE_ID = "toggle"
 
 class State(Enum):
     IDLE = "idle"
+    PREPARING = "preparing"
     RECORDING = "recording"
+    DRAINING = "draining"
 
 
 @dataclass
@@ -60,11 +69,12 @@ class AppController:
         self._on_status = on_status
         self._state = State.IDLE
         self._lock = threading.Lock()
-        self._active_preset: SummaryPreset | None = None
-        self._started_at: float | None = None
+        self._session: MeetingSession | None = None
 
         self.config: dict = {}
         self.presets: list[SummaryPreset] = []
+        # Ultima nota escrita, para o "Abrir ultima nota" da bandeja.
+        self.last_note: Path | None = None
         self._hotkeys = HotkeyManager(self._on_hotkey_event)
 
     # ------------------------------------------------------- ciclo de vida
@@ -83,7 +93,8 @@ class AppController:
         """Recarrega config/presets e reprograma o atalho.
 
         Chamado no boot e sempre que as configuracoes mudam. Erros aqui sao
-        reportados na UI, mas o app continua de pe com o que ja tinha.
+        reportados na UI, mas o app continua de pe com o que ja tinha. Uma
+        sessao em andamento segue com a config de quando comecou.
         """
         try:
             self.config = config_module.load_config()
@@ -114,6 +125,10 @@ class AppController:
 
     def shutdown(self) -> None:
         self._hotkeys.stop()
+        session, self._session = self._session, None
+        if session is not None:
+            # O que nao foi transcrito fica no spool (a fase 4 oferece retomar).
+            session.abort()
         with self._lock:
             self._state = State.IDLE
 
@@ -130,6 +145,10 @@ class AppController:
     def busy(self) -> bool:
         """Ha uma sessao em andamento (o menu mostra 'Parar')."""
         return self._state is not State.IDLE
+
+    @property
+    def can_stop(self) -> bool:
+        return self._state is State.RECORDING
 
     # ------------------------------------------------------------ comandos
 
@@ -151,28 +170,97 @@ class AppController:
         with self._lock:
             if self._state is not State.IDLE:
                 return  # ja ha uma sessao em andamento
-            self._state = State.RECORDING
-            self._active_preset = preset
-            self._started_at = time.monotonic()
-        log.info("Sessao iniciada (%s).", preset.id)
-        self._emit(
-            Status("recording", preset=preset.name, started_at=self._started_at)
+            self._state = State.PREPARING
+        try:
+            transcriber = self._make_provider()
+        except ApoloError as exc:
+            self._reset(Status("error", exc.message, exc.detail or ""))
+            return
+        session = MeetingSession(
+            self.config, preset, transcriber, on_status=self._on_session_status
         )
+        self._session = session
+        threading.Thread(
+            target=self._start_session, args=(session,), name="session-start", daemon=True
+        ).start()
+
+    def _start_session(self, session: MeetingSession) -> None:
+        try:
+            session.start()
+        except ApoloError as exc:
+            self._session = None
+            self._reset(Status("error", exc.message, exc.detail or ""))
+        except Exception as exc:
+            log.exception("Falha ao iniciar a sessao")
+            self._session = None
+            self._reset(Status("error", t("err.unexpected"), str(exc)))
 
     def finish(self) -> None:
         with self._lock:
-            if self._state is not State.RECORDING:
-                return
-            self._state = State.IDLE
-            preset, self._active_preset = self._active_preset, None
-            started, self._started_at = self._started_at, None
-        elapsed = time.monotonic() - (started or time.monotonic())
-        log.info("Sessao encerrada (%s, %.0fs).", preset.id if preset else "?", elapsed)
-        self._emit(
-            Status("done", t("status.stub_stopped"), t("status.stub_stopped.detail"))
+            if self._state is not State.RECORDING or self._session is None:
+                return  # preparando ou ja finalizando: nada a fazer
+            self._state = State.DRAINING
+            session = self._session
+        threading.Thread(
+            target=self._stop_session, args=(session,), name="session-stop", daemon=True
+        ).start()
+
+    def _stop_session(self, session: MeetingSession) -> None:
+        try:
+            session.stop()
+        except ApoloError as exc:
+            self._reset(Status("error", exc.message, exc.detail or ""))
+        except Exception as exc:
+            log.exception("Falha ao encerrar a sessao")
+            self._reset(Status("error", t("err.unexpected"), str(exc)))
+        finally:
+            if self._session is session:
+                self._session = None
+
+    def _make_provider(self) -> OpenAIProvider:
+        api_key = get_api_key()
+        if not api_key:
+            raise CredentialsError(t("err.no_api_key"), t("err.no_api_key.detail"))
+        return OpenAIProvider(
+            api_key=api_key,
+            stt_model=self.config["stt_model"],
+            text_model=self.config["text_model"],
+            timeout=float(self.config.get("request_timeout", 60)),
         )
 
+    # ------------------------------------------------------ sessao -> UI
+
+    def _on_session_status(self, s: SessionStatus) -> None:
+        """Traduz o estado da sessao para o overlay/bandeja. Qualquer thread."""
+        if s.note_path is not None:
+            self.last_note = s.note_path
+        if s.phase == PREPARING:
+            self._emit(Status("preparing", t("status.preparing"), t("status.preparing.detail")))
+        elif s.phase == RECORDING:
+            with self._lock:
+                if self._state is State.PREPARING:
+                    self._state = State.RECORDING
+            self._emit(Status("recording", detail=_recording_detail(s),
+                              preset=s.preset, started_at=s.started_at))
+        elif s.phase == DRAINING:
+            self._emit(Status("processing", t("status.draining"), _queue_detail(s)))
+        elif s.phase == DONE:
+            name = s.note_path.name if s.note_path else ""
+            self._reset(Status("done", t("status.note_saved"), name))
+        elif s.phase == ERROR:
+            err = s.error
+            message = err.message if err else t("err.unexpected")
+            detail = (err.detail or "") if err else ""
+            if s.note_path is not None:
+                detail = (detail + "\n" if detail else "") + t("status.audio_kept")
+            self._reset(Status("error", message, detail))
+
     # ------------------------------------------------------------ helpers
+
+    def _reset(self, status: Status) -> None:
+        with self._lock:
+            self._state = State.IDLE
+        self._emit(status)
 
     def _emit(self, status: Status) -> None:
         try:
@@ -183,3 +271,24 @@ class AppController:
     @property
     def state(self) -> State:
         return self._state
+
+
+def _queue_detail(s: SessionStatus) -> str:
+    parts = []
+    if s.pending:
+        parts.append(t("status.pending", n=s.pending, seconds=round(s.pending_seconds)))
+    if s.offline:
+        parts.append(t("status.offline"))
+    elif s.retrying:
+        parts.append(t("status.retrying"))
+    return " · ".join(parts)
+
+
+def _recording_detail(s: SessionStatus) -> str:
+    parts = []
+    for channel in s.channel_problems:
+        parts.append(t(f"status.channel_down.{channel}"))
+    # Fila normal (1-2 trechos) nao interessa; so quando esta acumulando.
+    if s.offline or s.retrying or s.pending > 3:
+        parts.append(_queue_detail(s))
+    return "\n".join(p for p in parts if p)
