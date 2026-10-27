@@ -115,6 +115,26 @@ def test_limits_off_with_zero(config, monkeypatch):
     s.stop()
 
 
+# ------------------------------------------- idioma dos presets padrao
+
+
+def test_default_presets_follow_the_language_unless_edited():
+    from apolo import config as config_module
+    from apolo.presets import SummaryPreset
+
+    english = [SummaryPreset.from_dict(d) for d in config_module.default_presets("en")]
+    english[1].system_prompt += "\nAlso list the risks."  # o usuario editou o daily
+    english.append(SummaryPreset(id="meu", name="Meu tipo", system_prompt="x"))
+
+    out = config_module.retranslate_presets(english, "en", "pt")
+    by_id = {p.id: p for p in out}
+    assert by_id["geral"].name == "Geral" and "Resumo" in by_id["geral"].system_prompt
+    assert by_id["cliente"].name == "Cliente"
+    assert by_id["daily"].system_prompt.endswith("Also list the risks.")  # intocado
+    assert by_id["meu"].name == "Meu tipo"
+    assert [p.id for p in out] == ["geral", "daily", "cliente", "1on1", "meu"]
+
+
 # ------------------------------------------------- loopback segue a saida
 
 

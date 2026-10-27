@@ -868,6 +868,12 @@ class SettingsWindow:
             "max_session_hours": _number(self._max_hours_var.get(), 3),
         }
 
+        old_language = self._config.get("ui_language") or AUTO
+        if config["ui_language"] != old_language:
+            validated = config_module.retranslate_presets(
+                validated, old_language, config["ui_language"]
+            )
+
         try:
             new_key = self._api_key_var.get().strip()
             if new_key:

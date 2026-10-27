@@ -73,6 +73,13 @@ def current() -> str:
     return _current
 
 
+def t_in(language: str, key: str) -> str:
+    """Texto num idioma especifico, sem mudar o corrente."""
+    code = detect() if not language or language == AUTO else language
+    text = _TRANSLATIONS.get(code, {}).get(key)
+    return text if text is not None else _TRANSLATIONS[DEFAULT].get(key, key)
+
+
 def t(key: str, **kwargs) -> str:
     """Texto traduzido. kwargs preenchem os campos {} da string."""
     text = _TRANSLATIONS.get(_current, {}).get(key)
@@ -142,6 +149,8 @@ _TRANSLATIONS["en"] = {
     ),
     "recover.confirm_discard": "Discard the leftover audio of that recording? The note keeps what was already transcribed.",
     "status.mic_paused": "Your microphone is paused (not being transcribed).",
+    "status.nothing_recorded": "Nobody spoke",
+    "status.nothing_recorded.detail": "Nothing was transcribed, so no note was created.",
     "status.silent": "No speech for {minutes} min - forgot to stop?",
     "status.limit_reached": "Recording for {hours} h: stopping on its own and writing the note.",
     "tray.pause_mic": "Pause my microphone",
@@ -514,6 +523,8 @@ _TRANSLATIONS["pt"] = {
     ),
     "recover.confirm_discard": "Descartar o áudio que sobrou dessa gravação? A nota fica com o que já foi transcrito.",
     "status.mic_paused": "Seu microfone está pausado (não está sendo transcrito).",
+    "status.nothing_recorded": "Ninguém falou",
+    "status.nothing_recorded.detail": "Nada foi transcrito, então nenhuma nota foi criada.",
     "status.silent": "Ninguém fala há {minutes} min - esqueceu de parar?",
     "status.limit_reached": "Gravando há {hours} h: parando sozinho e escrevendo a nota.",
     "tray.pause_mic": "Pausar meu microfone",

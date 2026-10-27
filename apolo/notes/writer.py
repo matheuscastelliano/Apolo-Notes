@@ -92,6 +92,14 @@ class NoteWriter:
             self.path = target
             return target
 
+    def discard(self) -> None:
+        """Apaga a nota (reuniao sem fala nenhuma)."""
+        with self._lock:
+            try:
+                self.path.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("Nao consegui apagar a nota vazia: %s", exc)
+
     def _write(self, text: str) -> None:
         if text == self._last_written:
             return

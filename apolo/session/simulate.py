@@ -87,6 +87,7 @@ def cmd_simulate(config: dict, presets: list, path: str, speed: float = 1.0) -> 
             stt_model=config["stt_model"],
             text_model=config["text_model"],
             timeout=float(config.get("request_timeout", 60)),
+            summary_timeout=float(config.get("summary_timeout", 180)),
         )
     except ApoloError as exc:
         print(exc)

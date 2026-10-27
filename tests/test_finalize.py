@@ -64,13 +64,58 @@ def test_summary_failure_still_saves_the_note(config, monkeypatch):
     assert not s.spool.dir.exists()
 
 
-def test_nothing_transcribed_skips_the_model(config, monkeypatch):
+def test_nothing_said_leaves_no_note(config, monkeypatch, tmp_path):
     summarizer = FakeSummarizer()
-    _, path, _ = run_session(
+    s, path, statuses = run_session(
         config, monkeypatch, FakeTranscriber(), [silence()], [silence()], summarizer=summarizer,
     )
-    assert summarizer.requests == []
-    assert "Nada foi transcrito" in path.read_text(encoding="utf-8")
+    assert path is None and summarizer.requests == []
+    assert statuses[-1].discarded
+    assert not list((tmp_path / "notas").glob("*.md"))
+    assert not s.spool.dir.exists()
+
+
+def test_nothing_said_but_notes_written_keeps_the_note(tmp_path):
+    from apolo.session.summary import build_summary
+
+    meta = NoteMeta(start=START)
+    summary, error = build_summary(FakeSummarizer(), meta, [], "só anotei", PRESET)
+    assert error is None and "Nada foi transcrito" in summary.body_markdown
+
+
+def test_summary_retries_transient_failures():
+    from apolo.errors import ProviderTimeoutError
+    from apolo.session.summary import summarize_with_retry
+
+    waits = []
+    summarizer = FakeSummarizer()
+    summarizer.fail = None
+    calls = {"n": 0}
+    real = summarizer.summarize
+
+    def flaky(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ProviderTimeoutError("demorou")
+        return real(request)
+
+    summarizer.summarize = flaky
+    result = summarize_with_retry(summarizer, object(), delays=(5, 20), sleep=waits.append)
+    assert result.title == "Daily do time" and waits == [5, 20]
+
+    calls["n"] = -10  # falha sempre
+    with pytest.raises(ProviderTimeoutError):
+        summarize_with_retry(summarizer, object(), delays=(1,), sleep=waits.append)
+
+
+def test_summary_does_not_retry_other_errors():
+    from apolo.session.summary import summarize_with_retry
+
+    waits = []
+    with pytest.raises(SummaryError):
+        summarize_with_retry(FakeSummarizer(fail=SummaryError("recusou")), object(),
+                             sleep=waits.append)
+    assert waits == []
 
 
 def test_user_notes_survive_to_the_final_note(config, monkeypatch):

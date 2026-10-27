@@ -62,16 +62,24 @@ def setup_logging(debug: bool = False) -> None:
     root_logger.setLevel(level)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
-    try:
-        log_path = config_module.config_dir() / "apolo.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_path, maxBytes=512_000, backupCount=2, encoding="utf-8"
-        )
-        file_handler.setFormatter(fmt)
-        root_logger.addHandler(file_handler)
-    except Exception:
-        pass  # sem log em arquivo o app ainda roda
+    # Sob o pythonw nao ha console: se o arquivo de log falhar, o app fica
+    # mudo e um erro some sem rastro. Por isso, se o lugar normal nao
+    # aceitar escrita, tenta a pasta de dados locais e registra o motivo.
+    failures = []
+    for folder in (config_module.config_dir(), config_module.data_dir()):
+        try:
+            log_path = folder / "apolo.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_path, maxBytes=512_000, backupCount=2, encoding="utf-8"
+            )
+            file_handler.setFormatter(fmt)
+            root_logger.addHandler(file_handler)
+            break
+        except Exception as exc:
+            failures.append(f"{folder}: {exc!r}")
+    for failure in failures:
+        log.warning("Log fora do lugar normal: %s", failure)
 
     if debug or sys.stderr is not None:
         stream = logging.StreamHandler()

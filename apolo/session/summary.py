@@ -3,7 +3,10 @@
 Usado no fim de toda sessao e pelo "Resumir de novo" (que le a propria nota,
 ver notes/reparse.py). Regras:
   - Sem nenhuma fala transcrita, nem chama o modelo: a nota diz isso.
-  - Se o resumo falhar no fim da reuniao, a nota sai assim mesmo, com a
+  - Falha passageira (timeout, rede, limite de uso, 5xx) tenta de novo
+    algumas vezes antes de desistir: no 1o teste real um timeout isolado
+    deixou a nota sem resumo.
+  - Se o resumo falhar mesmo assim no fim da reuniao, a nota sai com a
     transcricao completa e um aviso no lugar do resumo - da para resumir de
     novo depois. No "Resumir de novo" a falha nao toca na nota.
 """
@@ -11,10 +14,12 @@ ver notes/reparse.py). Regras:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
-from ..errors import ApoloError
+from ..errors import ApoloError, TransientError
 from ..i18n import t
 from ..notes.render import Entry, NoteMeta, format_transcript_for_llm
 from ..notes.reparse import is_placeholder_title, read_note
@@ -58,11 +63,35 @@ def build_summary(
         model=preset.text_model,
     )
     try:
-        return summarizer.summarize(request), None
+        return summarize_with_retry(summarizer, request), None
     except ApoloError as exc:
         log.error("Resumo falhou: %s", exc)
         body = f"## {t('note.summary')}\n*{t('note.summary.failed', error=exc.message)}*"
         return SummaryResult(title=fallback_title, body_markdown=body), exc
+
+
+# Espera entre as tentativas do resumo, em segundos (3 tentativas no total).
+RETRY_DELAYS = (5.0, 20.0)
+
+
+def summarize_with_retry(
+    summarizer: Summarizer,
+    request: SummaryRequest,
+    delays: tuple[float, ...] = RETRY_DELAYS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> SummaryResult:
+    """Tenta de novo nas falhas passageiras; as outras sobem na hora."""
+    for attempt, delay in enumerate((*delays, None)):
+        try:
+            return summarizer.summarize(request)
+        except TransientError as exc:
+            if delay is None:
+                raise
+            wait = max(delay, exc.retry_after or 0.0)
+            log.warning("Resumo: %s; tentativa %d, de novo em %.0fs",
+                        exc.message, attempt + 1, wait)
+            sleep(wait)
+    raise AssertionError("inalcancavel")
 
 
 def resummarize(

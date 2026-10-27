@@ -71,9 +71,14 @@ class OpenAIProvider:
         timeout: float = 60.0,
         max_retries: int = 0,
         client: Any = None,
+        summary_timeout: float = 180.0,
     ):
         self.stt_model = stt_model
         self.text_model = text_model
+        # O resumo de uma reuniao de 1-2 h pode levar bem mais que um trecho
+        # de 12 s para transcrever: prazo proprio (no 1o teste real, 60 s nao
+        # bastaram).
+        self.summary_timeout = summary_timeout
         # max_retries=0: quem repete e a fila de workers, com backoff e
         # sabendo se esta offline. Retry escondido no SDK so atrasaria isso.
         # `client` existe para os testes injetarem um fake.
@@ -198,6 +203,7 @@ class OpenAIProvider:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            "timeout": self.summary_timeout,
         }
         if response_format is not None:
             params["response_format"] = response_format

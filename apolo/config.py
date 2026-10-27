@@ -71,6 +71,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "chunk_pad_seconds": 0.2,
     "stt_workers": 2,
     "request_timeout": 60,
+    # O resumo tem prazo proprio: o modelo de texto pode levar minutos numa
+    # reuniao longa.
+    "summary_timeout": 180,
     # Travas de seguranca.
     "max_pending_audio_hours": 2,
     "silence_alert_minutes": 10,
@@ -89,24 +92,48 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def default_presets() -> list[dict[str, Any]]:
-    """Os quatro tipos de resumo iniciais, no idioma da interface.
+DEFAULT_PRESET_IDS = ("geral", "daily", "cliente", "1on1")
+
+
+def default_presets(language: str | None = None) -> list[dict[str, Any]]:
+    """Os quatro tipos de resumo iniciais, no idioma da interface (ou outro).
 
     Gerados na hora, e nao constantes de modulo, porque quem instala o Apolo
     com a interface em ingles deve receber prompts em ingles.
     """
+
+    def text(key: str) -> str:
+        return i18n.t_in(language, key) if language else i18n.t(key)
+
     return [
         {
             "id": pid,
-            "name": i18n.t(f"preset.{pid}.name"),
-            "description": i18n.t(f"preset.{pid}.description"),
-            "system_prompt": i18n.t(f"preset.{pid}.system_prompt"),
+            "name": text(f"preset.{pid}.name"),
+            "description": text(f"preset.{pid}.description"),
+            "system_prompt": text(f"preset.{pid}.system_prompt"),
             "keywords": [],
             "languages": None,
             "text_model": None,
         }
-        for pid in ("geral", "daily", "cliente", "1on1")
+        for pid in DEFAULT_PRESET_IDS
     ]
+
+
+def retranslate_presets(
+    presets: list[SummaryPreset], old_language: str, new_language: str
+) -> list[SummaryPreset]:
+    """Trocou o idioma da interface: os presets padrao que voce NAO editou
+    passam para o idioma novo. Os editados e os criados por voce ficam como
+    estao - o texto e seu."""
+    old = {d["id"]: d for d in default_presets(old_language)}
+    new = {d["id"]: d for d in default_presets(new_language)}
+    out = []
+    for preset in presets:
+        if preset.to_dict() == old.get(preset.id):
+            out.append(SummaryPreset.from_dict(new[preset.id]))
+        else:
+            out.append(preset)
+    return out
 
 
 def config_dir() -> Path:

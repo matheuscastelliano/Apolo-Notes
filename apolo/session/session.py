@@ -41,7 +41,7 @@ from ..i18n import t
 from ..notes.render import NoteMeta
 from ..notes.writer import NoteWriter
 from ..presets import SummaryPreset
-from ..providers.base import Summarizer, Transcriber
+from ..providers.base import Segment, Summarizer, Transcriber
 from .spool import Spool, SpoolSession
 from .summary import FinalizeChoice, build_summary
 from .transcript import TranscriptStore, spool_gaps
@@ -92,6 +92,8 @@ class SessionStatus:
     silent_minutes: int = 0
     # Gravando ha mais que `max_session_hours`: o app para sozinho.
     limit_reached: bool = False
+    # Em DONE: ninguem falou, a nota foi descartada.
+    discarded: bool = False
 
 
 class AudioKeeper:
@@ -170,6 +172,7 @@ class MeetingSession:
         self.mic_paused = False
         self.silent_minutes = 0
         self.limit_reached = False
+        self.discarded = False
         self._last_speech: float | None = None
         self._t0 = 0.0
         self._dirty = threading.Event()
@@ -409,8 +412,11 @@ class MeetingSession:
         self._emit(force=True)
         return self.writer.path
 
-    def finalize(self, choice: FinalizeChoice, summarizer: Summarizer) -> Path:
-        """Resumo, nota final, nome com o titulo, spool apagado. Bloqueia."""
+    def finalize(self, choice: FinalizeChoice, summarizer: Summarizer) -> Path | None:
+        """Resumo, nota final, nome com o titulo, spool apagado. Bloqueia.
+
+        None = nada foi dito nem anotado, e a nota foi descartada.
+        """
         if self.phase != READY:
             raise RuntimeError(f"finalize() em {self.phase}")
         self.phase = SUMMARIZING
@@ -421,8 +427,13 @@ class MeetingSession:
         self.meta.title = choice.title.strip()
         self.meta.participants = list(choice.participants)
         entries = self.store.visible(spool_gaps(self.spool.gaps()), None)
+        user_notes = self.writer.user_notes()
+        if not user_notes and not any(isinstance(e, Segment) and e.text.strip() for e in entries):
+            # Ninguem falou e voce nao anotou nada (iniciou sem querer, a
+            # reuniao nem comecou): uma nota vazia so faria barulho no vault.
+            return self._discard()
         summary, self.summary_error = build_summary(
-            summarizer, self.meta, entries, self.writer.user_notes(), preset,
+            summarizer, self.meta, entries, user_notes, preset,
             str(self.config.get("my_name") or ""),
         )
         self.writer.write_final(self.meta, summary, entries)
@@ -438,6 +449,20 @@ class MeetingSession:
         log.info("Nota pronta: %s", path)
         self._emit(force=True)
         return path
+
+    def _discard(self) -> None:
+        """Fim sem nota: apaga a nota ao vivo e o spool."""
+        self.writer.discard()
+        try:
+            self.spool.finish()
+            self.spool.delete()
+        except ApoloError as exc:
+            log.error("Nao consegui limpar o spool: %s", exc)
+        self.discarded = True
+        self.phase = DONE
+        log.info("Nada foi transcrito; nenhuma nota criada.")
+        self._emit(force=True)
+        return None
 
     def abort(self) -> None:
         """App fechando no meio: para tudo e deixa o spool para retomar."""
@@ -516,6 +541,7 @@ class MeetingSession:
             mic_paused=self.mic_paused and self.phase == RECORDING,
             silent_minutes=self.silent_minutes if self.phase == RECORDING else 0,
             limit_reached=self.limit_reached,
+            discarded=self.discarded,
         )
         if not force and status == self._last_status:
             return

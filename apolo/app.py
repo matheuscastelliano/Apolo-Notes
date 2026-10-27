@@ -337,12 +337,18 @@ class AppController:
             stt_model=self.config["stt_model"],
             text_model=self.config["text_model"],
             timeout=float(self.config.get("request_timeout", 60)),
+            summary_timeout=float(self.config.get("summary_timeout", 180)),
         )
 
     # ------------------------------------------------------ sessao -> UI
 
     def _on_session_status(self, s: SessionStatus) -> None:
         """Traduz o estado da sessao para o overlay/bandeja. Qualquer thread."""
+        if s.discarded:
+            self.last_note = None
+            self._reset(Status("done", t("status.nothing_recorded"),
+                               t("status.nothing_recorded.detail")))
+            return
         if s.note_path is not None:
             self.last_note = s.note_path
         if s.phase == PREPARING:
