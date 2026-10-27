@@ -279,6 +279,75 @@ _TRANSLATIONS["en"] = {
     "cli.chunks.summary": "{count} chunks, {sent:.1f}s of {total:.1f}s of audio ({pct:.0f}%)",
     "cli.chunks.none": "No chunks: no speech detected.",
     "cli.from_wav.file": "{name}: {seconds:.1f}s",
+    # -- provider (fases 3 e 4)
+    "err.quota": "Your OpenAI account is out of credit.",
+    "err.quota.detail": "Check billing at platform.openai.com. Pending audio stays on disk.",
+    "err.transcription_failed": "Transcription failed.",
+    "err.summary_failed": "Could not generate the summary.",
+    "err.summary_refused": "The model refused to summarise this meeting.",
+    "err.summary_empty": "The model returned an empty summary.",
+    # -- nota
+    "speaker.me": "Me",
+    "speaker.others": "Others",
+    "note.recording_title": "Recording",
+    "note.untitled": "Meeting",
+    "note.tag": "meeting",
+    "note.header.date_fmt": "%Y-%m-%d %H:%M",
+    "note.header.recording": "recording",
+    "note.header.with": "with {names}",
+    "note.summary": "Summary",
+    "note.summary.pending": "Generated when the recording stops.",
+    "note.my_notes": "My notes",
+    "note.my_notes.placeholder": "(whatever you write here during the meeting is kept and used in the summary)",
+    "note.transcript": "Transcript",
+    "note.transcript.live": "Transcript (live)",
+    "note.transcript.full": "Full transcript ({duration})",
+    "note.transcript.empty": "nothing transcribed yet",
+    "note.gap": "not transcribed",
+    "note.gap.reason.offline": "no connection",
+    "note.gap.reason.overflow": "too much pending audio",
+    "note.gap.reason.error": "transcription failed",
+    # -- resumo (prompt comum a todos os presets)
+    "summary.rules": (
+        "You write meeting notes from an automatic transcript.\n"
+        "Rules:\n"
+        "- Write in the language that dominates the meeting. Keep technical "
+        "terms in English exactly as they were spoken.\n"
+        "- Do not make anything up: use only what is in the transcript and "
+        "in the user's notes. If something is unclear, say it is unclear.\n"
+        "- '{me}' is {my_name}, who recorded the meeting. Use that name for "
+        "their action items.\n"
+        "- '{others}' is the computer audio and may be several people. Infer "
+        "names from the context (who is called by name, who answers) and from "
+        "the participant list; when you cannot, do not attribute it to anyone.\n"
+        "- The user's notes show what they found important: give them weight.\n"
+        "- Lines marked '{gap}' are gaps in the recording. Do not try to fill "
+        "in what was said during them.\n"
+        "- Automatic transcription gets words wrong; fix them from context "
+        "only when it is obvious."
+    ),
+    "summary.me_unknown": "the person who recorded the meeting",
+    "summary.format.json": (
+        "Answer with a JSON object containing:\n"
+        "- title: short, specific title for the meeting (up to ~60 "
+        "characters), without the date.\n"
+        "- tags: 1 to 5 lowercase tags, no spaces (use hyphens), no '#'.\n"
+        "- body_markdown: the body of the note in Markdown, with the sections "
+        "requested above, starting at the first '##'. No title, no "
+        "frontmatter."
+    ),
+    "summary.format.markdown": (
+        "Answer in Markdown only. First line: the meeting title (short, "
+        "without '#' and without the date). Then a blank line and the body, "
+        "with the sections requested above, starting at the first '##'."
+    ),
+    "summary.ctx.date": "Date: {date}",
+    "summary.ctx.duration": "Duration: {minutes} min",
+    "summary.ctx.participants": "Participants: {names}",
+    "summary.ctx.me": "'{me}' in the transcript: {name}",
+    "summary.ctx.notes": "User's notes",
+    "summary.ctx.no_notes": "(none)",
+    "summary.ctx.transcript": "Transcript",
 }
 
 # ------------------------------------------------------------- Portugues
@@ -466,4 +535,73 @@ _TRANSLATIONS["pt"] = {
     "cli.chunks.summary": "{count} trechos, {sent:.1f}s de {total:.1f}s de áudio ({pct:.0f}%)",
     "cli.chunks.none": "Nenhum trecho: nenhuma fala detectada.",
     "cli.from_wav.file": "{name}: {seconds:.1f}s",
+    "err.quota": "Sua conta da OpenAI está sem crédito.",
+    "err.quota.detail": "Confira o billing em platform.openai.com. O áudio pendente fica no disco.",
+    "err.transcription_failed": "Falha na transcrição.",
+    "err.summary_failed": "Não consegui gerar o resumo.",
+    "err.summary_refused": "O modelo se recusou a resumir esta reunião.",
+    "err.summary_empty": "O modelo devolveu um resumo vazio.",
+    "speaker.me": "Eu",
+    "speaker.others": "Outros",
+    "note.recording_title": "Gravando",
+    "note.untitled": "Reunião",
+    "note.tag": "reuniao",
+    "note.header.date_fmt": "%d/%m/%Y %H:%M",
+    "note.header.recording": "gravando",
+    "note.header.with": "com {names}",
+    "note.summary": "Resumo",
+    "note.summary.pending": "Gerando ao parar.",
+    "note.my_notes": "Minhas anotações",
+    "note.my_notes.placeholder": "(o que você escrever aqui durante a reunião é preservado e usado no resumo)",
+    "note.transcript": "Transcrição",
+    "note.transcript.live": "Transcrição (ao vivo)",
+    "note.transcript.full": "Transcrição completa ({duration})",
+    "note.transcript.empty": "nada transcrito ainda",
+    "note.gap": "trecho não transcrito",
+    "note.gap.reason.offline": "sem conexão",
+    "note.gap.reason.overflow": "áudio pendente demais",
+    "note.gap.reason.error": "falha na transcrição",
+    "summary.rules": (
+        "Você escreve notas de reunião a partir de uma transcrição "
+        "automática.\n"
+        "Regras:\n"
+        "- Escreva no idioma predominante da reunião. Mantenha os termos "
+        "técnicos em inglês exatamente como foram falados.\n"
+        "- Não invente nada: use só o que está na transcrição e nas anotações "
+        "do usuário. Se algo não ficou claro, diga que não ficou claro.\n"
+        "- '{me}' é {my_name}, quem gravou a reunião. Use esse nome nas "
+        "tarefas dele.\n"
+        "- '{others}' é o áudio do computador e pode ser várias pessoas. "
+        "Deduza os nomes pelo contexto (quem é chamado pelo nome, quem "
+        "responde) e pela lista de participantes; quando não der, não atribua "
+        "a ninguém.\n"
+        "- As anotações do usuário mostram o que ele achou importante: dê "
+        "peso a elas.\n"
+        "- As linhas marcadas como '{gap}' são lacunas da gravação. Não tente "
+        "preencher o que foi dito nelas.\n"
+        "- A transcrição automática erra palavras; corrija pelo contexto só "
+        "quando for óbvio."
+    ),
+    "summary.me_unknown": "a pessoa que gravou a reunião",
+    "summary.format.json": (
+        "Responda com um objeto JSON com:\n"
+        "- title: título curto e específico da reunião (até ~60 caracteres), "
+        "sem a data.\n"
+        "- tags: de 1 a 5 tags em minúsculas, sem espaços (use hífen), sem "
+        "'#'.\n"
+        "- body_markdown: o corpo da nota em Markdown, com as seções pedidas "
+        "acima, começando no primeiro '##'. Sem título e sem frontmatter."
+    ),
+    "summary.format.markdown": (
+        "Responda só em Markdown. Na 1ª linha, o título da reunião (curto, "
+        "sem '#' e sem a data). Depois uma linha em branco e o corpo, com as "
+        "seções pedidas acima, começando no primeiro '##'."
+    ),
+    "summary.ctx.date": "Data: {date}",
+    "summary.ctx.duration": "Duração: {minutes} min",
+    "summary.ctx.participants": "Participantes: {names}",
+    "summary.ctx.me": "'{me}' na transcrição: {name}",
+    "summary.ctx.notes": "Anotações do usuário",
+    "summary.ctx.no_notes": "(nenhuma)",
+    "summary.ctx.transcript": "Transcrição",
 }
