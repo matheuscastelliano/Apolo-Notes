@@ -210,3 +210,35 @@ def test_pipeline_uses_session_clock_across_gaps():
     assert chunks[1].start == pytest.approx(8.0 - 0.0, abs=TOL)  # sem margem: resync zera o pre-roll
     assert p.resyncs == 1
     check_invariants(chunks)
+
+
+def test_late_delivery_does_not_move_the_clock():
+    # Pico de CPU: a captura fica 0,8 s sem rodar e o driver entrega o lote
+    # de uma vez. Nada se perdeu - o relogio nao pode pular nem cortar a fala.
+    p = ChannelPipeline("mic", {}, t0=100.0, vad=FakeVad())
+    chunks = push_blocks(p, 100.0, 3, True)
+    block = 1600
+    stalled = 103.0 + 0.9  # os 8 blocos de 103.0 a 103.8 chegam juntos aqui
+    for i in range(8):
+        chunks += p.push(stalled + i * 0.001, np.full(block, 0.05, dtype=np.float32))
+    chunks += push_blocks(p, 103.8, 2, True)
+    chunks += push_blocks(p, 105.8, 2, False)
+    chunks += p.close()
+    assert p.resyncs == 0
+    assert p.late_deliveries == 1
+    assert len(chunks) == 1  # a fala de 0 a 5,8 s continua um trecho so
+    assert chunks[0].start == pytest.approx(0.0, abs=TOL)
+    check_invariants(chunks)
+
+
+def test_gap_at_the_end_is_adjusted_on_close():
+    # O stream volta depois de um buraco e a sessao para logo em seguida,
+    # antes de o atraso se confirmar: o close ainda ajusta o relogio.
+    p = ChannelPipeline("mic", {}, t0=100.0, vad=FakeVad())
+    chunks = push_blocks(p, 100.0, 2, False)
+    chunks += push_blocks(p, 105.0, 0.5, True)
+    assert p.resyncs == 0  # ainda segurando
+    chunks += p.close()
+    assert p.resyncs == 1
+    assert len(chunks) == 1
+    assert chunks[0].start == pytest.approx(5.0, abs=TOL)

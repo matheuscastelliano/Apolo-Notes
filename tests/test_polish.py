@@ -209,3 +209,41 @@ def test_fixed_loopback_device_does_not_follow(monkeypatch):
     time.sleep(0.1)
     src.stop()
     assert src.switches == 0 and src.device_name == "Caixa do notebook"
+
+
+def test_slow_processing_does_not_block_the_capture(monkeypatch):
+    # O callback (VAD, chunker, disco) trava 0,3 s: a leitura do driver segue
+    # e nada se perde - os blocos esperam na fila e chegam todos.
+    sc = FakeSoundcard()
+    monkeypatch.setattr(sources_module, "_soundcard", lambda: sc)
+    delivered = []
+    gate = threading.Event()
+
+    def on_block(t, block):
+        gate.wait(0.3)
+        delivered.append(block)
+
+    src = sources_module.SystemSource(on_block)
+    src.start()
+    assert wait_for(lambda: len(sc.recorded) > 20)  # leu ~20 blocos durante a 1a trava
+    gate.set()
+    src.stop()
+    assert len(delivered) == len(sc.recorded)
+
+
+def test_loopback_asks_for_a_one_second_driver_buffer(monkeypatch):
+    sc = FakeSoundcard()
+    sizes = []
+    original = FakeLoopback.recorder
+
+    def recorder(self, samplerate, blocksize):
+        sizes.append(blocksize)
+        return original(self, samplerate, blocksize)
+
+    monkeypatch.setattr(FakeLoopback, "recorder", recorder)
+    monkeypatch.setattr(sources_module, "_soundcard", lambda: sc)
+    src = sources_module.SystemSource(lambda t, b: None)
+    src.start()
+    assert wait_for(lambda: sc.recorded)
+    src.stop()
+    assert sizes == [48000]

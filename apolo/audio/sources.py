@@ -6,9 +6,13 @@ Escolhas da fase 0 (spike/RESULTADOS.md):
     silencio absoluto ele entrega zeros em vez de travar (o PyAudioWPatch
     nao entregava nada e foi descartado).
 
-Cada fonte roda na sua thread (`capture-mic`, `capture-sys`) e entrega
-blocos `(t_monotonic, float32 16 kHz mono)` pelo callback, sempre a partir
-dessa thread - nunca do callback do PortAudio, que nao pode demorar.
+Cada fonte usa duas threads. A de captura (`capture-mic`, `capture-sys`) so
+le o driver e anota a hora de chegada; a de entrega (`deliver-mic`,
+`deliver-sys`) chama o callback com `(t_monotonic, float32 16 kHz mono)`.
+O callback roda VAD, chunker e grava trechos em disco, e isso pode demorar
+num pico de CPU; se rodasse na thread de captura, o driver estouraria o
+buffer e o audio se perderia (`data discontinuity`, 1o teste real). Nunca
+do callback do PortAudio, que nao pode demorar.
 
 `first_block` e setado quando o 1o bloco chega. O mic do AirPods leva ~1 a
 1,4 s para comecar a entregar (troca do Bluetooth para HFP); a UI so deve
@@ -39,6 +43,11 @@ BlockCallback = Callable[[float, np.ndarray], None]
 
 BLOCK_SECONDS = 0.1
 LOOPBACK_RATE = 48000
+# Buffer do WASAPI no loopback. O soundcard usa o tamanho do bloco (100 ms)
+# se nada for dito, e qualquer travada maior que isso perdia audio.
+LOOPBACK_BUFFER_SECONDS = 1.0
+# Fila de entrega maior que isso (em blocos) = o processamento nao acompanha.
+BACKLOG_WARN_BLOCKS = 50
 
 
 # ------------------------------------------------------------ dispositivos
@@ -159,34 +168,60 @@ class _Source:
         self.device_name = ""
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._delivery: threading.Thread | None = None
+        self._blocks: queue.Queue[tuple[float, np.ndarray] | None] = queue.Queue()
+        self._backlog_warned = False
 
     def start(self) -> None:
         if self._thread is not None:
             return
         self._stop.clear()
+        self._blocks = queue.Queue()
+        self._delivery = threading.Thread(
+            target=self._delivery_loop, name=f"deliver-{self.channel}", daemon=True
+        )
+        self._delivery.start()
         self._thread = threading.Thread(
             target=self._run_safe, name=f"capture-{self.channel}", daemon=True
         )
         self._thread.start()
 
     def stop(self, timeout: float = 3.0) -> None:
+        """Para a captura e espera o que ja foi lido ser entregue."""
         self._stop.set()
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=timeout)
+        delivery, self._delivery = self._delivery, None
+        if delivery is not None:
+            self._blocks.put(None)
+            delivery.join(timeout=timeout)
 
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
     def _deliver(self, t_arrival: float, block: np.ndarray) -> None:
+        """Chamado na thread de captura: so enfileira, para voltar ao driver."""
         if self.first_block_at is None:
             self.first_block_at = t_arrival
             self.first_block.set()
-        try:
-            self.on_block(t_arrival, block)
-        except Exception:
-            log.exception("Erro processando bloco do canal %s", self.channel)
+        self._blocks.put((t_arrival, block))
+        if not self._backlog_warned and self._blocks.qsize() > BACKLOG_WARN_BLOCKS:
+            self._backlog_warned = True
+            log.warning("Canal %s: processamento atrasado (%d blocos na fila)",
+                        self.channel, self._blocks.qsize())
+
+    def _delivery_loop(self) -> None:
+        while True:
+            item = self._blocks.get()
+            if item is None:
+                return
+            t_arrival, block = item
+            try:
+                self.on_block(t_arrival, block)
+            except Exception:
+                log.exception("Erro processando bloco do canal %s", self.channel)
 
     def _run_safe(self) -> None:
         try:
@@ -210,12 +245,11 @@ class MicSource(_Source):
     def _run(self) -> None:
         import sounddevice as sd
 
-        blocks: queue.Queue[tuple[float, bytes]] = queue.Queue()
+        blocks: queue.Queue[tuple[float, bytes, str]] = queue.Queue()
 
         def callback(indata, frames, time_info, status) -> None:
-            if status:
-                log.debug("mic: %s", status)
-            blocks.put((time.monotonic(), bytes(indata)))
+            # Nada de log aqui: o callback do PortAudio nao pode demorar.
+            blocks.put((time.monotonic(), bytes(indata), str(status) if status else ""))
 
         index = resolve_mic(self.device)
         try:
@@ -229,6 +263,9 @@ class MicSource(_Source):
             stream = sd.RawInputStream(
                 samplerate=SAMPLE_RATE, channels=1, dtype="int16", device=index,
                 blocksize=int(SAMPLE_RATE * BLOCK_SECONDS), callback=callback,
+                # Mais buffer no driver: aguenta o callback atrasar num pico
+                # de CPU. A latencia nao importa para quem so grava.
+                latency="high",
             )
             stream.start()
         except sd.PortAudioError as exc:
@@ -239,11 +276,13 @@ class MicSource(_Source):
         try:
             while not self._stop.is_set():
                 try:
-                    t_arrival, raw = blocks.get(timeout=0.2)
+                    t_arrival, raw, status = blocks.get(timeout=0.2)
                 except queue.Empty:
                     if not stream.active:
                         raise AudioError(t("err.mic_lost"))
                     continue
+                if status:
+                    log.warning("mic: %s", status)  # ex.: input overflow
                 pcm = np.frombuffer(raw, dtype=np.int16)
                 self._deliver(t_arrival, int16_to_float(pcm))
         finally:
@@ -303,7 +342,12 @@ class SystemSource(_Source):
         numframes = int(LOOPBACK_RATE * BLOCK_SECONDS)
         resampler = Resampler(LOOPBACK_RATE)
         try:
-            recorder = loopback.recorder(samplerate=LOOPBACK_RATE, blocksize=numframes)
+            # `blocksize` aqui e o tamanho do buffer do WASAPI; a leitura
+            # continua em blocos de 100 ms (`numframes` no record).
+            recorder = loopback.recorder(
+                samplerate=LOOPBACK_RATE,
+                blocksize=int(LOOPBACK_RATE * LOOPBACK_BUFFER_SECONDS),
+            )
             recorder.__enter__()
         except Exception as exc:
             raise AudioError(t("err.loopback_open"), str(exc)) from exc
