@@ -1,8 +1,13 @@
-"""Uma reuniao, do "Iniciar" ao "Parar": captura -> spool -> STT -> nota.
+"""Uma reuniao, do "Iniciar" a nota pronta: captura -> spool -> STT -> nota.
 
-    PREPARING --as duas fontes entregaram--> RECORDING --stop()--> DRAINING --> DONE
-        |                                                             |
-        +-- nenhuma fonte abriu --> ERROR          fila parada (chave) +--> ERROR
+    PREPARING --fontes abertas--> RECORDING --stop()--> DRAINING --fila vazia--> READY
+        |                                                   |                     |
+        +-- nenhuma fonte abriu --> ERROR    fila parada --> ERROR       finalize()
+                                             (chave)                          |
+                                                              SUMMARIZING --> DONE
+
+Uma sessao retomada (crash, app fechado no meio) entra direto em DRAINING
+por `resume()`, com o que sobrou no spool.
 
 Threads (alem das de captura e das de STT):
   `note` - reescreve a nota ao vivo quando chega trecho novo (no maximo uma
@@ -12,9 +17,8 @@ O audio vai das fontes para o pipeline (VAD + chunker) na propria thread de
 captura, e cada trecho cortado vai direto para o spool e para a fila. Nada
 fica so na memoria: se o app morrer, o spool e o done.jsonl tem tudo.
 
-Fase 3: no fim a nota fica com a transcricao completa e o resumo ainda como
-"gerado ao parar". O resumo, a janela de parada e a limpeza do spool sao a
-fase 4.
+No fim (finalize): resumo, nota final com a transcricao recolhida, nome do
+arquivo com o titulo e o spool apagado - o audio era temporario.
 """
 
 from __future__ import annotations
@@ -30,14 +34,16 @@ from typing import Any, Callable
 from .. import config as config_module
 from ..audio.chunker import Chunk
 from ..audio.pipeline import ChannelPipeline
+from ..audio.resample import SAMPLE_RATE
 from ..audio.sources import MicSource, SystemSource
 from ..errors import ApoloError, AudioError
 from ..i18n import t
 from ..notes.render import NoteMeta
 from ..notes.writer import NoteWriter
 from ..presets import SummaryPreset
-from ..providers.base import Transcriber
+from ..providers.base import Summarizer, Transcriber
 from .spool import Spool, SpoolSession
+from .summary import FinalizeChoice, build_summary
 from .transcript import TranscriptStore, spool_gaps
 from .workers import SttQueue
 
@@ -51,6 +57,8 @@ NOTE_INTERVAL = 1.5
 PREPARING = "preparing"
 RECORDING = "recording"
 DRAINING = "draining"
+READY = "ready"
+SUMMARIZING = "summarizing"
 DONE = "done"
 ERROR = "error"
 
@@ -75,7 +83,52 @@ class SessionStatus:
     # Canal que caiu ou nem abriu (o outro segue gravando).
     channel_problems: tuple[str, ...] = ()
     error: ApoloError | None = None
+    # Em DONE: o resumo falhou, mas a nota (com a transcricao) foi salva.
+    summary_error: ApoloError | None = None
     note_path: Path | None = None
+
+
+class AudioKeeper:
+    """Opcao "salvar audio": um FLAC continuo por canal, ao lado das notas.
+
+    Escreve o audio cru das fontes (antes do VAD), na thread de captura de
+    cada canal. Qualquer erro so desliga a gravacao daquele canal: guardar o
+    audio e um extra, nunca motivo para perder a reuniao.
+    """
+
+    LABELS = {"mic": "speaker.me", "sys": "speaker.others"}
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self._files: dict[str, Any] = {}
+        self._broken: set[str] = set()
+
+    def write(self, channel: str, block) -> None:
+        if channel in self._broken:
+            return
+        try:
+            f = self._files.get(channel)
+            if f is None:
+                import soundfile
+
+                self.directory.mkdir(parents=True, exist_ok=True)
+                path = self.directory / f"{t(self.LABELS[channel])}.flac"
+                f = soundfile.SoundFile(
+                    str(path), "w", samplerate=SAMPLE_RATE, channels=1, format="FLAC"
+                )
+                self._files[channel] = f
+            f.write(block)
+        except Exception as exc:
+            log.error("Nao consegui guardar o audio do canal %s: %s", channel, exc)
+            self._broken.add(channel)
+
+    def close(self) -> None:
+        for f in self._files.values():
+            try:
+                f.close()
+            except Exception:
+                pass
+        self._files = {}
 
 
 class MeetingSession:
@@ -104,14 +157,15 @@ class MeetingSession:
         self.writer: NoteWriter | None = None
         self.queue: SttQueue | None = None
         self.meta: NoteMeta | None = None
+        self.summary_error: ApoloError | None = None
         self._sources: list = []
         self._pipelines: dict[str, ChannelPipeline] = {}
+        self._audio: AudioKeeper | None = None
         self._t0 = 0.0
         self._dirty = threading.Event()
         self._stop_note = threading.Event()
         self._note_thread: threading.Thread | None = None
         self._last_status: SessionStatus | None = None
-        self._spool_errors = 0
 
     # ---------------------------------------------------------------- start
 
@@ -130,23 +184,9 @@ class MeetingSession:
         try:
             self.writer = NoteWriter(config_module.notes_dir(self.config), self.started_wall)
             self.spool.update(note_path=str(self.writer.path))
-            self.store = TranscriptStore(self.spool.dir)
-            self.meta = NoteMeta(
-                start=self.started_wall,
-                preset_id=self.preset.id,
-                preset_name=self.preset.name,
-                transcript_block=self.config.get("transcript_block", "callout"),
-            )
-            self.queue = SttQueue(
-                self.transcriber,
-                self.spool,
-                self.store,
-                keywords=[*self.config.get("keywords", []), *self.preset.keywords],
-                languages=self.preset.languages or self.config.get("languages"),
-                workers=int(self.config.get("stt_workers", 2) or 2),
-                on_change=self._dirty.set,
-                backoff_initial=self.backoff_initial,
-            )
+            self._setup(self.started_wall)
+            if self.config.get("save_audio"):
+                self._audio = AudioKeeper(self._audio_dir())
             self._open_sources()
         except BaseException:
             self._teardown_failed_start()
@@ -156,10 +196,75 @@ class MeetingSession:
         self.started_at = time.monotonic()
         self.phase = RECORDING
         self.writer.write_live(self.meta, [])
-        self._note_thread = threading.Thread(target=self._note_loop, name="note", daemon=True)
-        self._note_thread.start()
+        self._start_note_thread()
         log.info("Gravando: %s (nota em %s)", self.preset.id, self.writer.path)
         self._emit(force=True)
+
+    @classmethod
+    def resume(
+        cls,
+        config: dict,
+        preset: SummaryPreset,
+        transcriber: Transcriber,
+        spool: SpoolSession,
+        *,
+        on_status: Callable[[SessionStatus], None],
+        backoff_initial: float = 1.0,
+    ) -> "MeetingSession":
+        """Sessao que um crash deixou no spool: transcreve o que faltou.
+
+        Devolve em DRAINING; quem chama segue com `drain()` e `finalize()`.
+        """
+        session = cls(config, preset, transcriber, on_status=on_status,
+                      backoff_initial=backoff_initial)
+        session.spool = spool
+        info = spool.info
+        try:
+            started = datetime.fromisoformat(info.get("started_at") or info.get("created_at"))
+        except (TypeError, ValueError):
+            started = datetime.now().astimezone()
+        session.started_wall = started
+        note_path = info.get("note_path")
+        session.writer = NoteWriter(
+            config_module.notes_dir(config), started,
+            path=Path(note_path) if note_path else None,
+        )
+        session._setup(started)
+        # Sessao que nao chegou a parar nao tem duracao salva: estima pelo
+        # fim do ultimo trecho conhecido.
+        ends = [s.end for s in session.store.segments()] + [s.end for s in spool.pending()]
+        session.meta.duration_seconds = float(info.get("duration_seconds") or max(ends, default=0.0))
+        session.phase = DRAINING
+        session.queue.submit_pending()
+        session.queue.start()
+        session._start_note_thread()
+        log.info("Retomando a sessao %s (%d trechos pendentes)", spool.id, session.queue.pending_count())
+        session._emit(force=True)
+        return session
+
+    def _setup(self, started: datetime) -> None:
+        self.store = TranscriptStore(self.spool.dir)
+        self.meta = NoteMeta(
+            start=started,
+            preset_id=self.preset.id,
+            preset_name=self.preset.name,
+            transcript_block=self.config.get("transcript_block", "callout"),
+        )
+        self.queue = SttQueue(
+            self.transcriber,
+            self.spool,
+            self.store,
+            keywords=[*self.config.get("keywords", []), *self.preset.keywords],
+            languages=self.preset.languages or self.config.get("languages"),
+            workers=int(self.config.get("stt_workers", 2) or 2),
+            on_change=self._dirty.set,
+            backoff_initial=self.backoff_initial,
+        )
+
+    def _audio_dir(self) -> Path:
+        base = self.config.get("audio_dir")
+        root = Path(base).expanduser() if base else config_module.notes_dir(self.config) / "audio"
+        return root / f"{self.started_wall:%Y-%m-%d %H%M}"
 
     def _open_sources(self) -> None:
         self._t0 = time.monotonic()
@@ -184,6 +289,8 @@ class MeetingSession:
         for src in self._sources:
             src.stop()
         self._sources = []
+        if self._audio is not None:
+            self._audio.close()
         if self.queue is not None:
             self.queue.stop()
         if self.spool is not None:
@@ -195,6 +302,8 @@ class MeetingSession:
 
     def _feeder(self, channel: str):
         def on_block(t_arrival: float, block) -> None:
+            if self._audio is not None:
+                self._audio.write(channel, block)
             self._handle(self._pipelines[channel].push(t_arrival, block))
 
         return on_block
@@ -205,7 +314,6 @@ class MeetingSession:
                 seg = self.spool.add(chunk.channel, chunk.start, chunk.pcm)
             except ApoloError as exc:
                 # Disco cheio ou sem permissao: perde este trecho, nao a reuniao.
-                self._spool_errors += 1
                 log.error("Spool: %s", exc)
                 continue
             self.queue.submit(seg)
@@ -214,12 +322,7 @@ class MeetingSession:
     # ----------------------------------------------------------------- stop
 
     def stop(self) -> Path | None:
-        """Para de gravar, espera a fila e escreve a nota. Bloqueia.
-
-        Sem internet, espera ate a conexao voltar (o overlay mostra). Se a
-        fila parar por erro de chave, devolve o que tiver e o audio fica no
-        spool para retomar depois.
-        """
+        """Para de gravar e espera a fila (ver `drain`). Bloqueia."""
         if self.phase != RECORDING:
             return self.writer.path if self.writer else None
         self.phase = DRAINING
@@ -227,9 +330,23 @@ class MeetingSession:
             src.stop()
         for pipeline in self._pipelines.values():
             self._handle(pipeline.close())
+        if self._audio is not None:
+            self._audio.close()
         self.meta.duration_seconds = time.monotonic() - (self.started_at or self._t0)
-        self._emit(force=True)
+        try:
+            self.spool.update(duration_seconds=round(self.meta.duration_seconds, 1))
+        except ApoloError as exc:
+            log.error("Spool: %s", exc)
+        return self.drain()
 
+    def drain(self) -> Path | None:
+        """Espera a fila esvaziar e deixa a sessao em READY. Bloqueia.
+
+        Sem internet, espera ate a conexao voltar (o overlay mostra). Se a
+        fila parar por erro de chave, vai para ERROR e o audio fica no spool
+        para retomar depois.
+        """
+        self._emit(force=True)
         while not self.queue.wait_idle(timeout=1.0):
             if self.queue.fatal is not None:
                 break
@@ -245,26 +362,67 @@ class MeetingSession:
             self.phase = ERROR
             self._emit(force=True, error=self.queue.fatal)
             return self.writer.path
-        self.spool.finish()
-        self.phase = DONE
-        log.info("Sessao concluida: %d trechos transcritos", self.queue.transcribed)
+        self.phase = READY
+        log.info("Transcricao completa: %d trechos", self.queue.transcribed)
         self._emit(force=True)
         return self.writer.path
+
+    def finalize(self, choice: FinalizeChoice, summarizer: Summarizer) -> Path:
+        """Resumo, nota final, nome com o titulo, spool apagado. Bloqueia."""
+        if self.phase != READY:
+            raise RuntimeError(f"finalize() em {self.phase}")
+        self.phase = SUMMARIZING
+        self._emit(force=True)
+
+        preset = choice.preset
+        self.meta.preset_id, self.meta.preset_name = preset.id, preset.name
+        self.meta.title = choice.title.strip()
+        self.meta.participants = list(choice.participants)
+        entries = self.store.visible(spool_gaps(self.spool.gaps()), None)
+        summary, self.summary_error = build_summary(
+            summarizer, self.meta, entries, self.writer.user_notes(), preset,
+            str(self.config.get("my_name") or ""),
+        )
+        self.writer.write_final(self.meta, summary, entries)
+        path = self.writer.rename_for(self.meta.start, self.meta.title or summary.title)
+
+        # O audio era temporario. O que nao foi transcrito ja virou lacuna.
+        try:
+            self.spool.finish()
+            self.spool.delete()
+        except ApoloError as exc:
+            log.error("Nao consegui limpar o spool: %s", exc)
+        self.phase = DONE
+        log.info("Nota pronta: %s", path)
+        self._emit(force=True)
+        return path
 
     def abort(self) -> None:
         """App fechando no meio: para tudo e deixa o spool para retomar."""
         for src in self._sources:
             src.stop(timeout=1.0)
+        if self._audio is not None:
+            self._audio.close()
         self._stop_note.set()
         if self.queue is not None:
             self.queue.stop(timeout=1.0)
-        if self.writer is not None and self.meta is not None:
+        if self.writer is not None and self.meta is not None and self.phase in (
+            RECORDING, DRAINING, PREPARING
+        ):
             try:
+                if self.phase == RECORDING:
+                    self.spool.update(
+                        duration_seconds=round(time.monotonic() - (self.started_at or self._t0), 1)
+                    )
                 self._write_note()
             except ApoloError:
                 pass
 
     # ---------------------------------------------------------- nota ao vivo
+
+    def _start_note_thread(self) -> None:
+        self._note_thread = threading.Thread(target=self._note_loop, name="note", daemon=True)
+        self._note_thread.start()
 
     def _note_loop(self) -> None:
         last = 0.0
@@ -310,6 +468,7 @@ class MeetingSession:
             retrying=bool(q and q.retrying),
             channel_problems=problems,
             error=error or (q.fatal if q else None),
+            summary_error=self.summary_error,
             note_path=self.writer.path if self.writer else None,
         )
         if not force and status == self._last_status:

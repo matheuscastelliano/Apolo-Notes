@@ -11,7 +11,6 @@ import time
 import numpy as np
 import pytest
 
-from apolo import i18n
 from apolo.audio.chunker import Chunk
 from apolo.errors import CredentialsError, OfflineError, TranscriptionError
 from apolo.notes import render
@@ -20,19 +19,17 @@ from apolo.notes.writer import NoteWriter, unique_path
 from apolo.presets import SummaryPreset
 from apolo.providers.base import Gap, Segment
 from apolo.session import session as session_module
-from apolo.session.session import DONE, ERROR, RECORDING, MeetingSession
+from apolo.providers.base import SummaryResult
+from apolo.session.session import DONE, ERROR, READY, RECORDING, MeetingSession
 from apolo.session.spool import Spool
+from apolo.session.summary import FinalizeChoice
 from apolo.session.transcript import TranscriptStore, spool_gaps
 from apolo.session.workers import SttQueue
 
 SR = 16000
 
 
-@pytest.fixture(autouse=True)
-def portuguese():
-    i18n.set_language("pt")
-    yield
-    i18n.set_language("en")
+pytestmark = pytest.mark.usefixtures("portuguese")
 
 
 def pcm(seconds: float) -> np.ndarray:
@@ -293,23 +290,25 @@ class FakePipeline:
         return []
 
 
-@pytest.fixture
-def config(tmp_path):
-    return {
-        "notes_dir": str(tmp_path / "notas"),
-        "spool_dir": str(tmp_path / "spool"),
-        "max_pending_audio_hours": 2,
-        "keywords": ["deploy"],
-        "languages": ["pt", "en"],
-        "stt_workers": 2,
-        "transcript_block": "callout",
-    }
-
-
 PRESET = SummaryPreset(id="daily", name="Daily", system_prompt="x")
 
 
-def run_session(config, monkeypatch, fake, mic_blocks, sys_blocks, sys_fail=None):
+class FakeSummarizer:
+    def __init__(self, fail=None, title="Daily do time"):
+        self.fail = fail
+        self.title = title
+        self.requests = []
+
+    def summarize(self, request):
+        self.requests.append(request)
+        if self.fail is not None:
+            raise self.fail
+        return SummaryResult(title=self.title, tags=["daily"],
+                             body_markdown="## Resumo\nTudo certo.\n\n## Próximos passos\n- [ ] **Ana**: deploy")
+
+
+def run_session(config, monkeypatch, fake, mic_blocks, sys_blocks, sys_fail=None,
+                summarizer=None, choice=None):
     monkeypatch.setattr(session_module, "ChannelPipeline", FakePipeline)
     statuses = []
 
@@ -323,7 +322,9 @@ def run_session(config, monkeypatch, fake, mic_blocks, sys_blocks, sys_fail=None
     s.start()
     assert s.phase == RECORDING
     time.sleep(0.3)  # deixa as fontes entregarem tudo
-    path = s.stop()
+    s.stop()
+    assert s.phase == READY
+    path = s.finalize(choice or FinalizeChoice(PRESET), summarizer or FakeSummarizer())
     return s, path, statuses
 
 
@@ -348,10 +349,14 @@ def test_session_end_to_end(config, monkeypatch):
     lines = [line for line in text.splitlines() if line.startswith("> **[")]
     assert [line.split("]")[1].split(":")[0].strip(" *") for line in lines] == ["Eu", "Outros", "Eu"]
     assert text.count("fala ") == 3
-    assert s.spool.state == "finished"
-    assert s.spool.pending() == []  # nenhum audio sobrou
+    # Nota final: titulo do resumo no nome, resumo no corpo, transcricao recolhida.
+    assert path.name == render.note_filename(s.started_wall, "Daily do time")
+    assert "Tudo certo." in text and "> [!note]- " in text
+    assert not list(path.parent.glob("*Gravando*"))
+    assert not s.spool.dir.exists()  # o audio era temporario
     phases = [st.phase for st in statuses]
-    assert phases[0] == "preparing" and RECORDING in phases and phases[-1] == DONE
+    assert phases[0] == "preparing" and RECORDING in phases and READY in phases
+    assert phases[-1] == DONE
 
 
 def test_session_records_with_one_channel_down(config, monkeypatch):

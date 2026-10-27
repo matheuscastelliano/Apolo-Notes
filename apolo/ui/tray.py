@@ -12,6 +12,7 @@ O menu:
   Iniciar com o tipo de resumo  >  <- um item por preset
   Abrir ultima nota                <- depois da primeira gravacao
   Abrir pasta das notas
+  Resumir de novo...               <- outra nota pronta, outro tipo de resumo
   Configuracoes...
   Sair
 """
@@ -64,6 +65,7 @@ class Tray:
         *,
         on_open_notes: Callable[[], None],
         on_open_last_note: Callable[[], None],
+        on_resummarize: Callable[[], None],
         on_settings: Callable[[], None],
         on_quit: Callable[[], None],
     ):
@@ -74,6 +76,7 @@ class Tray:
 
         self._on_open_notes = on_open_notes
         self._on_open_last_note = on_open_last_note
+        self._on_resummarize = on_resummarize
         self._on_settings = on_settings
         self._on_quit = on_quit
         self._thread: threading.Thread | None = None
@@ -106,6 +109,11 @@ class Tray:
         if self._controller.last_note is not None:
             yield pystray.MenuItem(t("tray.open_last_note"), self._on_open_last_note)
         yield pystray.MenuItem(t("tray.open_notes"), self._on_open_notes)
+        yield pystray.MenuItem(
+            t("tray.resummarize"),
+            self._on_resummarize,
+            enabled=lambda item: not self._controller.busy,
+        )
         yield pystray.MenuItem(t("tray.settings"), self._on_settings)
         yield pystray.Menu.SEPARATOR
         yield pystray.MenuItem(t("tray.quit"), self._on_quit)

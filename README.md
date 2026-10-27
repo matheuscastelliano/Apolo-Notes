@@ -16,9 +16,9 @@ e a transcrição recolhida, numa pasta à sua escolha (pode ser o vault do Obsi
 |---|---|---|
 | 0 | Teste de captura no Windows | ✅ |
 | 1 | Esqueleto: bandeja, configurações, presets | ✅ |
-| 2 | Pipeline de áudio (mic + loopback, VAD, chunker, spool) | — |
-| 3 | Transcrição ao vivo na nota | — |
-| 4 | Fim da sessão, resumo, recuperação | — |
+| 2 | Pipeline de áudio (mic + loopback, VAD, chunker, spool) | ✅ |
+| 3 | Transcrição ao vivo na nota | ✅ |
+| 4 | Fim da sessão, resumo, recuperação | ✅ |
 | 5 | Configurações completas e polimento | — |
 | 6 | Linux | — |
 

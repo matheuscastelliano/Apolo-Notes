@@ -2,13 +2,22 @@
 
     IDLE --iniciar--> PREPARING --fontes abertas--> RECORDING
       ^                                                 |
-      +------- nota pronta / erro <------ DRAINING <--parar
+      +--- nota pronta / erro <--- FINISHING <------- parar
+                                   (resto da fila + janela de parada + resumo)
 
-A sessao em si (captura, spool, fila de STT, nota ao vivo) mora em
+FINISHING tambem cobre "retomar uma sessao que ficou no spool" e "resumir de
+novo uma nota pronta": nos tres casos nao da para comecar outra gravacao.
+
+A sessao em si (captura, spool, fila de STT, nota) mora em
 session/session.py. Aqui so ficam o estado que a UI enxerga, a traducao do
 SessionStatus para o Status do overlay/bandeja e as threads que impedem a
-UI de travar: abrir as fontes leva ate ~5 s (Bluetooth) e esperar a fila no
-fim pode levar o tempo que a internet demorar para voltar.
+UI de travar: abrir as fontes leva ate ~5 s (Bluetooth), esperar a fila no
+fim leva o tempo que a internet demorar para voltar, e o resumo, alguns
+segundos.
+
+A janela de parada abre assim que voce clica em Parar (`ask_finalize`, que
+a UI fornece). O resumo comeca quando as duas coisas terminaram: a fila e a
+janela.
 
 Regra herdada do Artemis: nenhuma excecao pode derrubar o app. Um erro vira
 um aviso no overlay e volta para IDLE.
@@ -18,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -31,8 +41,10 @@ from .i18n import t
 from .presets import SummaryPreset
 from .providers.openai_provider import OpenAIProvider
 from .secrets_store import get_api_key
-from .session.session import DONE, DRAINING, ERROR, PREPARING, RECORDING
+from .session.session import DONE, DRAINING, ERROR, PREPARING, READY, RECORDING, SUMMARIZING
 from .session.session import MeetingSession, SessionStatus
+from .session.spool import Spool, SpoolSession
+from .session.summary import FinalizeChoice, resummarize
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +57,7 @@ class State(Enum):
     IDLE = "idle"
     PREPARING = "preparing"
     RECORDING = "recording"
-    DRAINING = "draining"
+    FINISHING = "finishing"
 
 
 @dataclass
@@ -62,11 +74,15 @@ class Status:
 
 
 StatusCallback = Callable[[Status], None]
+# (preset marcado, duracao em s, callback com a escolha). Chamado de qualquer
+# thread; a UI abre a janela na main thread e chama o callback uma vez.
+AskFinalize = Callable[[SummaryPreset, float, Callable[[FinalizeChoice], None]], None]
 
 
 class AppController:
-    def __init__(self, on_status: StatusCallback):
+    def __init__(self, on_status: StatusCallback, ask_finalize: AskFinalize | None = None):
         self._on_status = on_status
+        self._ask_finalize = ask_finalize
         self._state = State.IDLE
         self._lock = threading.Lock()
         self._session: MeetingSession | None = None
@@ -127,7 +143,8 @@ class AppController:
         self._hotkeys.stop()
         session, self._session = self._session, None
         if session is not None:
-            # O que nao foi transcrito fica no spool (a fase 4 oferece retomar).
+            # O que nao foi transcrito/resumido fica no spool: na proxima vez
+            # que o app abrir, ele oferece retomar.
             session.abort()
         with self._lock:
             self._state = State.IDLE
@@ -141,9 +158,12 @@ class AppController:
                 return preset
         return self.presets[0] if self.presets else None
 
+    def preset_by_id(self, preset_id: str | None) -> SummaryPreset | None:
+        return next((p for p in self.presets if p.id == preset_id), None) or self.default_preset()
+
     @property
     def busy(self) -> bool:
-        """Ha uma sessao em andamento (o menu mostra 'Parar')."""
+        """Ha uma sessao em andamento (o menu mostra 'Parar' ou 'Aguarde')."""
         return self._state is not State.IDLE
 
     @property
@@ -167,55 +187,120 @@ class AppController:
         self.begin(preset)
 
     def begin(self, preset: SummaryPreset) -> None:
-        with self._lock:
-            if self._state is not State.IDLE:
-                return  # ja ha uma sessao em andamento
-            self._state = State.PREPARING
+        if not self._claim(State.PREPARING):
+            return  # ja ha uma sessao em andamento
         try:
-            transcriber = self._make_provider()
+            provider = self._make_provider()
         except ApoloError as exc:
             self._reset(Status("error", exc.message, exc.detail or ""))
             return
-        session = MeetingSession(
-            self.config, preset, transcriber, on_status=self._on_session_status
-        )
+        session = MeetingSession(self.config, preset, provider, on_status=self._on_session_status)
         self._session = session
-        threading.Thread(
-            target=self._start_session, args=(session,), name="session-start", daemon=True
-        ).start()
+        self._spawn("session-start", self._start_session, session)
 
     def _start_session(self, session: MeetingSession) -> None:
         try:
             session.start()
-        except ApoloError as exc:
-            self._session = None
-            self._reset(Status("error", exc.message, exc.detail or ""))
         except Exception as exc:
-            log.exception("Falha ao iniciar a sessao")
             self._session = None
-            self._reset(Status("error", t("err.unexpected"), str(exc)))
+            self._fail(exc, "Falha ao iniciar a sessao")
 
     def finish(self) -> None:
         with self._lock:
             if self._state is not State.RECORDING or self._session is None:
                 return  # preparando ou ja finalizando: nada a fazer
-            self._state = State.DRAINING
+            self._state = State.FINISHING
             session = self._session
-        threading.Thread(
-            target=self._stop_session, args=(session,), name="session-stop", daemon=True
-        ).start()
+        choice = self._request_choice(session)
+        self._spawn("session-stop", self._finish_session, session, choice, True)
 
-    def _stop_session(self, session: MeetingSession) -> None:
+    def _finish_session(self, session: MeetingSession, choice: "_Choice", stop: bool) -> None:
+        """Thread: termina a fila, espera a janela de parada e resume."""
         try:
-            session.stop()
-        except ApoloError as exc:
-            self._reset(Status("error", exc.message, exc.detail or ""))
+            if stop:
+                session.stop()
+            else:
+                session.drain()
+            if session.phase != READY:
+                return  # ERROR: o status ja foi para a UI
+            session.finalize(choice.wait(), session.transcriber)
         except Exception as exc:
-            log.exception("Falha ao encerrar a sessao")
-            self._reset(Status("error", t("err.unexpected"), str(exc)))
+            self._fail(exc, "Falha ao encerrar a sessao")
         finally:
             if self._session is session:
                 self._session = None
+
+    def _request_choice(self, session: MeetingSession) -> "_Choice":
+        """Abre a janela de parada (ou nao, com on_stop = auto)."""
+        choice = _Choice(FinalizeChoice(session.preset))
+        if self.config.get("on_stop") == "auto" or self._ask_finalize is None:
+            choice.set(choice.default)
+            return choice
+        if session.started_at is not None:  # acabou de parar: stop() ainda nao mediu
+            duration = time.monotonic() - session.started_at
+        else:  # sessao retomada
+            duration = session.meta.duration_seconds if session.meta else 0.0
+        try:
+            self._ask_finalize(session.preset, duration, choice.set)
+        except Exception:
+            log.exception("Nao consegui abrir a janela de parada")
+            choice.set(choice.default)
+        return choice
+
+    # ------------------------------------------------- retomar / descartar
+
+    def incomplete_sessions(self) -> list[SpoolSession]:
+        """Sessoes que ficaram no spool (crash, app fechado no meio)."""
+        try:
+            spool = Spool.from_config(self.config)
+        except Exception:
+            return []
+        exclude = self._session.spool.id if self._session and self._session.spool else None
+        return [s for s in spool.incomplete_sessions(exclude) if s.info.get("kind") == "meeting"]
+
+    def resume(self, spool_session: SpoolSession) -> None:
+        if not self._claim(State.FINISHING):
+            return
+        preset = self.preset_by_id(spool_session.info.get("preset"))
+        try:
+            if preset is None:
+                raise ApoloError(t("err.no_presets"))
+            provider = self._make_provider()
+            session = MeetingSession.resume(
+                self.config, preset, provider, spool_session, on_status=self._on_session_status
+            )
+        except Exception as exc:
+            self._fail(exc, "Falha ao retomar a sessao")
+            return
+        self._session = session
+        choice = self._request_choice(session)
+        self._spawn("session-resume", self._finish_session, session, choice, False)
+
+    def discard(self, spool_session: SpoolSession) -> None:
+        """Apaga o audio que sobrou. A nota (se houver) fica como esta."""
+        try:
+            spool_session.delete()
+        except ApoloError as exc:
+            self._emit(Status("error", exc.message, exc.detail or ""))
+
+    # ------------------------------------------------------ resumir de novo
+
+    def resummarize(self, path: Path, choice: FinalizeChoice) -> None:
+        if not self._claim(State.FINISHING):
+            return
+        self._emit(Status("processing", t("status.summarizing"), path.name))
+        self._spawn("resummarize", self._resummarize, path, choice)
+
+    def _resummarize(self, path: Path, choice: FinalizeChoice) -> None:
+        try:
+            new_path = resummarize(
+                path, choice, self._make_provider(), str(self.config.get("my_name") or "")
+            )
+        except Exception as exc:
+            self._fail(exc, "Falha ao resumir de novo")
+            return
+        self.last_note = new_path
+        self._reset(Status("done", t("status.note_saved"), new_path.name))
 
     def _make_provider(self) -> OpenAIProvider:
         api_key = get_api_key()
@@ -244,9 +329,17 @@ class AppController:
                               preset=s.preset, started_at=s.started_at))
         elif s.phase == DRAINING:
             self._emit(Status("processing", t("status.draining"), _queue_detail(s)))
+        elif s.phase == READY:
+            self._emit(Status("processing", t("status.waiting_choice")))
+        elif s.phase == SUMMARIZING:
+            self._emit(Status("processing", t("status.summarizing")))
         elif s.phase == DONE:
             name = s.note_path.name if s.note_path else ""
-            self._reset(Status("done", t("status.note_saved"), name))
+            if s.summary_error is not None:
+                self._reset(Status("error", t("status.saved_without_summary"),
+                                   f"{s.summary_error.message}\n{name}"))
+            else:
+                self._reset(Status("done", t("status.note_saved"), name))
         elif s.phase == ERROR:
             err = s.error
             message = err.message if err else t("err.unexpected")
@@ -256,6 +349,23 @@ class AppController:
             self._reset(Status("error", message, detail))
 
     # ------------------------------------------------------------ helpers
+
+    def _claim(self, state: State) -> bool:
+        with self._lock:
+            if self._state is not State.IDLE:
+                return False
+            self._state = state
+            return True
+
+    def _spawn(self, name: str, target, *args) -> None:
+        threading.Thread(target=target, args=args, name=name, daemon=True).start()
+
+    def _fail(self, exc: Exception, context: str) -> None:
+        if isinstance(exc, ApoloError):
+            self._reset(Status("error", exc.message, exc.detail or ""))
+        else:
+            log.exception(context)
+            self._reset(Status("error", t("err.unexpected"), str(exc)))
 
     def _reset(self, status: Status) -> None:
         with self._lock:
@@ -271,6 +381,24 @@ class AppController:
     @property
     def state(self) -> State:
         return self._state
+
+
+class _Choice:
+    """A escolha da janela de parada, entregue de uma thread para outra."""
+
+    def __init__(self, default: FinalizeChoice):
+        self.default = default
+        self._value: FinalizeChoice | None = None
+        self._event = threading.Event()
+
+    def set(self, value: FinalizeChoice | None) -> None:
+        if not self._event.is_set():
+            self._value = value or self.default
+            self._event.set()
+
+    def wait(self) -> FinalizeChoice:
+        self._event.wait()
+        return self._value or self.default
 
 
 def _queue_detail(s: SessionStatus) -> str:

@@ -5,19 +5,22 @@
     python -m apolo --set-key    # grava a API key (voce digita)
     python -m apolo --debug      # log detalhado no console
 
-Ferramentas do pipeline de audio (fase 2, nao chamam a API):
+Ferramentas de desenvolvimento:
     python -m apolo --devices               # mics e saidas (loopback), por nome
     python -m apolo --test-capture [20]     # grava mic + loopback e mostra os cortes
     python -m apolo --from-wav arquivo.wav  # passa um WAV pelo VAD + chunker
-    python -m apolo --simulate arquivo.wav  # reuniao de mentira, com STT de verdade
+    python -m apolo --simulate arquivo.wav  # reuniao de mentira, com STT e resumo de verdade
 
-Modelo de threads (fase 1):
-    main       -> Tkinter (overlay + janela de configuracao + cronometro)
-    tray       -> pystray, com seu proprio message loop
-    hotkeys    -> hook de teclado do pynput (so se houver atalho configurado)
+Modelo de threads:
+    main          -> Tkinter (overlay, configuracoes, janela de parada, cronometro)
+    tray          -> pystray, com seu proprio message loop
+    hotkeys       -> hook de teclado do pynput (so se houver atalho configurado)
+    capture-*     -> uma por fonte de audio: VAD, chunker e spool
+    stt-*         -> fila de transcricao
+    note          -> nota ao vivo
+    session-*     -> abrir as fontes, terminar a fila, resumir (bloqueiam)
 
-Tudo que vem das outras threads entra na UI por root.after(0, ...). As
-threads de captura e de transcricao entram nas fases 2 e 3 (ver PLANO.md).
+Tudo que vem das outras threads entra na UI por root.after(0, ...).
 """
 
 from __future__ import annotations
@@ -30,16 +33,21 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from tkinter import filedialog, messagebox
 
 from . import config as config_module
 from . import i18n, secrets_store
 from .app import AppController, Status
 from .errors import ApoloError
 from .i18n import t
+from .notes.render import format_duration
+from .notes.reparse import is_placeholder_title, read_note
 from .ui.overlay import Overlay
 from .ui.settings_window import SettingsWindow
+from .ui.stop_dialog import ask_finalize as ask_finalize_window
 from .ui.tray import Tray, tray_hosted
 
 log = logging.getLogger("apolo")
@@ -191,7 +199,15 @@ def run_app(open_settings: bool = False) -> int:
         except RuntimeError:
             pass  # app ja esta fechando
 
-    controller = AppController(on_status)
+    def ask_finalize(preset, duration: float, on_done) -> None:
+        """Janela de parada. Chamada de qualquer thread."""
+        title = t("stop.ended", duration=format_duration(duration))
+        root.after(0, lambda: ask_finalize_window(
+            root, title=title, presets=controller.presets, selected=preset,
+            on_done=on_done, hint=t("stop.hint"),
+        ))
+
+    controller = AppController(on_status, ask_finalize)
     settings = SettingsWindow(
         root,
         on_saved=controller.reload,
@@ -214,6 +230,62 @@ def run_app(open_settings: bool = False) -> int:
         except OSError as exc:
             apply_status(Status("error", t("err.note_open"), str(exc)))
 
+    def resummarize() -> None:
+        """Escolhe uma nota pronta e refaz o resumo com outro tipo."""
+        if controller.busy:
+            return
+        notes = config_module.notes_dir(controller.config)
+        chosen = filedialog.askopenfilename(
+            title=t("tray.resummarize"),
+            initialdir=str(notes if notes.exists() else Path.home()),
+            filetypes=[("Markdown", "*.md")],
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        try:
+            parsed = read_note(path)
+        except ApoloError as exc:
+            apply_status(Status("error", exc.message, exc.detail or ""))
+            return
+        title = "" if is_placeholder_title(parsed.title) else parsed.title
+        ask_finalize_window(
+            root,
+            title=t("resummarize.title", name=path.stem),
+            presets=controller.presets,
+            selected=controller.preset_by_id(parsed.meta.preset_id),
+            on_done=lambda choice: controller.resummarize(path, choice),
+            hint=t("resummarize.hint"),
+            initial_title=title,
+            initial_participants=parsed.meta.participants,
+            button=t("resummarize.button"),
+        )
+
+    def offer_recovery() -> None:
+        """Sessao que ficou no spool (crash, app fechado no meio): retomar?"""
+        if controller.busy:
+            return
+        sessions = controller.incomplete_sessions()
+        if not sessions:
+            return
+        session = sessions[-1]  # a mais recente; as outras ficam para depois
+        started = session.info.get("started_at") or session.info.get("created_at") or ""
+        try:
+            when = datetime.fromisoformat(started).strftime(t("note.header.date_fmt"))
+        except ValueError:
+            when = session.id
+        answer = messagebox.askyesnocancel(
+            "Apolo",
+            t("recover.text", when=when, pending=len(session.pending())),
+            icon="question",
+        )
+        if answer is True:
+            controller.resume(session)
+        elif answer is False and messagebox.askyesno(
+            "Apolo", t("recover.confirm_discard"), icon="warning"
+        ):
+            controller.discard(session)
+
     def quit_app() -> None:
         log.info("Encerrando.")
         controller.shutdown()
@@ -228,6 +300,7 @@ def run_app(open_settings: bool = False) -> int:
         controller,
         on_open_notes=lambda: root.after(0, open_notes),
         on_open_last_note=lambda: root.after(0, open_last_note),
+        on_resummarize=lambda: root.after(0, resummarize),
         on_settings=lambda: root.after(0, settings.open),
         on_quit=lambda: root.after(0, quit_app),
     )
@@ -255,6 +328,8 @@ def run_app(open_settings: bool = False) -> int:
 
     if open_settings:
         root.after(300, settings.open)
+
+    root.after(1500, offer_recovery)
 
     if not secrets_store.get_api_key():
         root.after(400, settings.open)

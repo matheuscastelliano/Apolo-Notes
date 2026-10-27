@@ -2,13 +2,14 @@
 
     python -m apolo --simulate reuniao.wav [--speed 4]
 
-Para desenvolver a fase 3 sem precisar de uma reuniao: o WAV entra como o
-canal "Outros" (loopback) e o mic fica em silencio. Passa pelo mesmo caminho
-do app - VAD, chunker, spool, fila de STT, nota ao vivo - e escreve a nota
-na pasta configurada. `--speed` acelera a leitura do arquivo; os tempos na
-nota continuam sendo os do audio.
+Para desenvolver sem precisar de uma reuniao: o WAV entra como o canal
+"Outros" (loopback) e o mic fica em silencio. Passa pelo mesmo caminho do
+app - VAD, chunker, spool, fila de STT, nota ao vivo, resumo com o preset
+padrao - e escreve a nota na pasta configurada. `--speed` acelera a leitura
+do arquivo; os tempos na nota continuam sendo os do audio.
 
-Custa o mesmo que transcrever o WAV (gpt-transcribe, ~US$ 0,0045/min).
+Custa o mesmo que transcrever o WAV (gpt-transcribe, ~US$ 0,0045/min) mais
+um resumo (centavos).
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ from ..audio.resample import SAMPLE_RATE
 from ..errors import ApoloError
 from ..i18n import t
 from ..secrets_store import require_api_key
-from .session import MeetingSession, SessionStatus
+from .session import READY, MeetingSession, SessionStatus
+from .summary import FinalizeChoice
 
 BLOCK = SAMPLE_RATE // 10
 
@@ -114,6 +116,13 @@ def cmd_simulate(config: dict, presets: list, path: str, speed: float = 1.0) -> 
         while not all(src.done.is_set() for src in sources.values()):
             time.sleep(0.2)
         note = session.stop()
+        if session.phase == READY:
+            # Com --speed, o relogio mediu menos que o audio: vale o do WAV.
+            session.meta.duration_seconds = len(others) / SAMPLE_RATE
+            # Sem janela de parada: resume com o preset padrao.
+            note = session.finalize(FinalizeChoice(preset), provider)
+            if session.summary_error is not None:
+                print(session.summary_error)
     except KeyboardInterrupt:
         session.abort()
         return 130

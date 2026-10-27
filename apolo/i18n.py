@@ -115,6 +115,32 @@ _TRANSLATIONS["en"] = {
     "status.channel_down.mic": "Your microphone is not being recorded.",
     "status.channel_down.sys": "The system audio (others) is not being recorded.",
     "status.audio_kept": "The audio not yet transcribed stays on disk.",
+    "status.waiting_choice": "Choose the summary type to finish.",
+    "status.summarizing": "Writing the summary...",
+    "status.saved_without_summary": "Note saved without a summary",
+    "note.summary.nothing": "Nothing was transcribed in this meeting.",
+    "note.summary.failed": "The summary could not be generated ({error}). Use 'Summarise again' in the tray menu.",
+    "err.note_not_apolo": "This file is not an Apolo note.",
+    "err.note_read": "Could not read the note.",
+    "stop.ended": "Meeting ended ({duration})",
+    "stop.hint": "The rest of the transcript finishes in the background while you fill this in. Closing the window uses what is selected.",
+    "stop.type": "Summary type",
+    "stop.title": "Title",
+    "stop.people": "Who was there",
+    "stop.people.hint": "Optional. Names separated by commas.",
+    "stop.generate": "Generate summary",
+    "resummarize.title": "Summarise again: {name}",
+    "resummarize.hint": "Rewrites the summary of this note from its transcript. Your notes and the transcript stay as they are.",
+    "resummarize.button": "Summarise again",
+    "tray.resummarize": "Summarise again...",
+    "recover.text": (
+        "A recording from {when} did not finish ({pending} chunk(s) of audio "
+        "still to transcribe).\n\n"
+        "Yes: finish it now (transcribe what is left and summarise).\n"
+        "No: discard the leftover audio.\n"
+        "Cancel: ask again next time."
+    ),
+    "recover.confirm_discard": "Discard the leftover audio of that recording? The note keeps what was already transcribed.",
     # -- bandeja
     "tray.tooltip": "Apolo",
     "tray.toggle.start": "Start recording ({name})",
@@ -389,6 +415,32 @@ _TRANSLATIONS["pt"] = {
     "status.channel_down.mic": "Seu microfone não está sendo gravado.",
     "status.channel_down.sys": "O áudio do sistema (outros) não está sendo gravado.",
     "status.audio_kept": "O áudio ainda não transcrito continua no disco.",
+    "status.waiting_choice": "Escolha o tipo de resumo para terminar.",
+    "status.summarizing": "Escrevendo o resumo...",
+    "status.saved_without_summary": "Nota salva sem resumo",
+    "note.summary.nothing": "Nada foi transcrito nesta reunião.",
+    "note.summary.failed": "Não consegui gerar o resumo ({error}). Use 'Resumir de novo' no menu da bandeja.",
+    "err.note_not_apolo": "Este arquivo não é uma nota do Apolo.",
+    "err.note_read": "Não consegui ler a nota.",
+    "stop.ended": "Reunião encerrada ({duration})",
+    "stop.hint": "O resto da transcrição termina por trás enquanto você preenche. Fechar a janela usa o que estiver marcado.",
+    "stop.type": "Tipo de resumo",
+    "stop.title": "Título",
+    "stop.people": "Quem estava",
+    "stop.people.hint": "Opcional. Nomes separados por vírgula.",
+    "stop.generate": "Gerar resumo",
+    "resummarize.title": "Resumir de novo: {name}",
+    "resummarize.hint": "Reescreve o resumo desta nota a partir da transcrição. Suas anotações e a transcrição continuam como estão.",
+    "resummarize.button": "Resumir de novo",
+    "tray.resummarize": "Resumir de novo...",
+    "recover.text": (
+        "Uma gravação de {when} não terminou ({pending} trecho(s) de áudio "
+        "ainda sem transcrever).\n\n"
+        "Sim: terminar agora (transcrever o que falta e resumir).\n"
+        "Não: descartar o áudio que sobrou.\n"
+        "Cancelar: perguntar de novo na próxima vez."
+    ),
+    "recover.confirm_discard": "Descartar o áudio que sobrou dessa gravação? A nota fica com o que já foi transcrito.",
     "tray.tooltip": "Apolo",
     "tray.toggle.start": "Iniciar gravação ({name})",
     "tray.toggle.stop": "Parar gravação",
