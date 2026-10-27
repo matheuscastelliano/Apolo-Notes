@@ -55,13 +55,24 @@ def _default_hostapi_inputs() -> list[dict]:
 
     hostapi = sd.default.hostapi
     default_index = sd.default.device[0]
+    devices = sd.query_devices()
+    # O MME corta os nomes em 31 caracteres; o WASAPI tem o nome inteiro.
+    full_names = []
+    for api in sd.query_hostapis():
+        if "WASAPI" in api.get("name", ""):
+            full_names = [devices[i]["name"] for i in api.get("devices", [])
+                          if devices[i].get("max_input_channels", 0) > 0]
     result = []
-    for index, dev in enumerate(sd.query_devices()):
+    for index, dev in enumerate(devices):
         if dev.get("max_input_channels", 0) < 1:
             continue
         if hostapi is not None and hostapi >= 0 and dev.get("hostapi") != hostapi:
             continue
-        result.append({"index": index, "name": dev["name"], "default": index == default_index})
+        if "Sound Mapper" in dev["name"]:
+            continue  # pseudo-dispositivo do MME que so repete o padrao
+        name = dev["name"]
+        name = next((f for f in full_names if f.startswith(name.rstrip())), name)
+        result.append({"index": index, "name": name, "default": index == default_index})
     return result
 
 
@@ -95,9 +106,9 @@ def resolve_mic(name: str | None) -> int | None:
     for d in devices:
         if d["name"] == name:
             return d["index"]
-    # O MME corta nomes em 31 caracteres; aceita prefixo/trecho do nome.
+    # Nome editado a mao ou de outra versao do driver: aceita trecho do nome.
     for d in devices:
-        if name.startswith(d["name"]) or d["name"] in name or name in d["name"]:
+        if d["name"] in name or name in d["name"]:
             return d["index"]
     log.warning("Mic '%s' nao encontrado; usando o padrao.", name)
     return None
@@ -143,6 +154,7 @@ class _Source:
         self.on_block = on_block
         self.device = device
         self.first_block = threading.Event()
+        self.first_block_at: float | None = None  # time.monotonic() do 1o bloco
         self.error: AudioError | None = None
         self.device_name = ""
         self._stop = threading.Event()
@@ -168,7 +180,9 @@ class _Source:
         return self._thread is not None and self._thread.is_alive()
 
     def _deliver(self, t_arrival: float, block: np.ndarray) -> None:
-        self.first_block.set()
+        if self.first_block_at is None:
+            self.first_block_at = t_arrival
+            self.first_block.set()
         try:
             self.on_block(t_arrival, block)
         except Exception:
@@ -205,8 +219,10 @@ class MicSource(_Source):
 
         index = resolve_mic(self.device)
         try:
-            info = sd.query_devices(index if index is not None else sd.default.device[0])
-            self.device_name = info["name"]
+            wanted = index if index is not None else sd.default.device[0]
+            self.device_name = next(
+                d["name"] for d in _default_hostapi_inputs() if d["index"] == wanted
+            )
         except Exception:
             self.device_name = self.device or ""
         try:

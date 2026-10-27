@@ -62,6 +62,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "chunk_min_seconds": 1.0,
     "chunk_target_seconds": 12,
     "chunk_max_seconds": 30,
+    # Pausa que basta para cortar depois do alvo / pausa que corta sempre.
+    "chunk_short_pause_seconds": 0.3,
+    "chunk_long_pause_seconds": 1.5,
+    # Menos fala que isso no trecho = clique ou tosse: descartado.
+    "chunk_min_speech_seconds": 0.4,
+    # Silencio mantido antes e depois da fala, para nao comer as bordas.
+    "chunk_pad_seconds": 0.2,
     "stt_workers": 2,
     "request_timeout": 60,
     # Travas de seguranca.

@@ -277,8 +277,15 @@ class Spool:
         return session
 
     def open_session(self, session_id: str) -> SpoolSession:
+        # Id e so um nome de pasta: nada de "..", separador ou caminho
+        # absoluto - delete() apaga a pasta inteira.
         directory = self.root / session_id
-        if not directory.is_dir() or directory.parent != self.root:
+        if (
+            session_id in ("", ".", "..")
+            or Path(session_id).name != session_id
+            or not directory.is_dir()
+            or directory.resolve().parent != self.root.resolve()
+        ):
             raise SpoolError(t("err.spool_missing"), session_id)
         return SpoolSession(directory, self.max_pending_seconds)
 

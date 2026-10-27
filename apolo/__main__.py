@@ -5,6 +5,11 @@
     python -m apolo --set-key    # grava a API key (voce digita)
     python -m apolo --debug      # log detalhado no console
 
+Ferramentas do pipeline de audio (fase 2, nao chamam a API):
+    python -m apolo --devices               # mics e saidas (loopback), por nome
+    python -m apolo --test-capture [20]     # grava mic + loopback e mostra os cortes
+    python -m apolo --from-wav arquivo.wav  # passa um WAV pelo VAD + chunker
+
 Modelo de threads (fase 1):
     main       -> Tkinter (overlay + janela de configuracao + cronometro)
     tray       -> pystray, com seu proprio message loop
@@ -274,19 +279,43 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--set-key", action="store_true", help="grava a API key da OpenAI")
     parser.add_argument("--debug", action="store_true", help="log detalhado")
+    parser.add_argument(
+        "--devices", action="store_true", help="lista mics e saidas (loopback)"
+    )
+    parser.add_argument(
+        "--test-capture", type=float, nargs="?", const=20.0, metavar="SEGUNDOS",
+        help="grava mic + loopback e imprime os trechos cortados (padrao: 20 s)",
+    )
+    parser.add_argument(
+        "--keep-spool", action="store_true",
+        help="com --test-capture: guarda os WAVs dos trechos para ouvir",
+    )
+    parser.add_argument(
+        "--from-wav", metavar="ARQUIVO", help="passa um WAV pelo VAD + chunker"
+    )
     args = parser.parse_args(argv)
 
     setup_logging(args.debug)
 
-    # Le o config so para definir o idioma antes da primeira mensagem.
-    # Se ele estiver quebrado, seguimos com o idioma do sistema.
+    # Le o config para definir o idioma antes da primeira mensagem. Se ele
+    # estiver quebrado, seguimos com os padroes e o idioma do sistema.
     try:
-        config_module.load_config()
+        config = config_module.load_config()
     except ApoloError:
+        config = dict(config_module.DEFAULT_CONFIG)
         i18n.set_language(None)
 
     if args.set_key:
         return cmd_set_key()
+
+    if args.devices or args.test_capture is not None or args.from_wav:
+        from .audio import cli as audio_cli
+
+        if args.devices:
+            return audio_cli.cmd_devices(config)
+        if args.from_wav:
+            return audio_cli.cmd_from_wav(config, args.from_wav)
+        return audio_cli.cmd_test_capture(config, args.test_capture, args.keep_spool)
 
     if not claim_single_instance():
         if sys.platform != "win32":
