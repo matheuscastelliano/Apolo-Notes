@@ -39,6 +39,8 @@ _STT_MODELS = ["gpt-transcribe"]
 _TEXT_MODELS = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
 
 _HINT = "#6b6b70"
+_SAVED = "#1a7f37"
+_SAVED_MS = 4000
 _PAD = 12
 # Coluna dos rotulos + espacamentos, descontada da largura das dicas.
 _LABEL_COLUMN = 165
@@ -66,17 +68,20 @@ class SettingsWindow:
         self._is_recording = is_recording
         self._win: tk.Toplevel | None = None
         self._presets: list[SummaryPreset] = []
-        self._selected: int | None = None
+        self._preset_index: int | None = None
         self._suspend_select = False
         self._test: dict | None = None
+        self._saved_job: str | None = None
 
-    def open(self) -> None:
+    def open(self, saved: bool = False) -> None:
         if self._win is not None and self._win.winfo_exists():
             self._win.deiconify()
             self._win.lift()
             self._win.focus_force()
-            return
-        self._build()
+        else:
+            self._build()
+        if saved:
+            self._show_saved()
 
     # --------------------------------------------------------- construcao
 
@@ -100,9 +105,12 @@ class SettingsWindow:
         ttk.Button(
             footer, text=t("cfg.save"), command=self._save, style="Accent.TButton"
         ).pack(side="right")
-        ttk.Button(footer, text=t("cfg.cancel"), command=self._close).pack(
+        ttk.Button(footer, text=t("cfg.close"), command=self._close).pack(
             side="right", padx=(0, 8)
         )
+        # "Salvo" aparece aqui por alguns segundos depois de salvar.
+        self._saved_label = ttk.Label(footer, text="", foreground=_SAVED)
+        self._saved_label.pack(side="left")
 
         notebook = ttk.Notebook(win)
         notebook.pack(side="top", fill="both", expand=True, padx=_PAD, pady=(_PAD, 0))
@@ -259,9 +267,8 @@ class SettingsWindow:
             openai, row, "cfg.api_key",
             ttk.Entry(openai, textvariable=self._api_key_var, show="•"),
         )
-        self._hint(openai, self._api_key_hint()).grid(
-            row=row, column=1, sticky="w", pady=(0, 10)
-        )
+        self._api_key_hint_label = self._hint(openai, self._api_key_hint())
+        self._api_key_hint_label.grid(row=row, column=1, sticky="w", pady=(0, 10))
         row += 1
         self._stt_var = tk.StringVar(value=self._config["stt_model"])
         row = self._field(
@@ -663,7 +670,7 @@ class SettingsWindow:
     def _select_preset(self, index: int) -> None:
         self._commit_form()  # nao perde o que estava sendo editado
         self._refresh_list()  # o nome pode ter mudado no formulario
-        self._selected = index
+        self._preset_index = index
         preset = self._presets[index]
         self._name_var.set(preset.name)
         self._description_var.set(preset.description)
@@ -680,9 +687,9 @@ class SettingsWindow:
 
     def _commit_form(self) -> None:
         """Copia o formulario para o preset selecionado, sem validar ainda."""
-        if self._selected is None or self._selected >= len(self._presets):
+        if self._preset_index is None or self._preset_index >= len(self._presets):
             return
-        preset = self._presets[self._selected]
+        preset = self._presets[self._preset_index]
         old_name = preset.name
         preset.name = self._name_var.get().strip() or preset.name
         if self._default_preset_var.get() == old_name:
@@ -711,14 +718,14 @@ class SettingsWindow:
         self._select_preset(len(self._presets) - 1)
 
     def _remove_preset(self) -> None:
-        if self._selected is None or len(self._presets) <= 1:
+        if self._preset_index is None or len(self._presets) <= 1:
             messagebox.showinfo("Apolo", t("dlg.keep_one_preset"), parent=self._win)
             return
-        name = self._presets[self._selected].name
+        name = self._presets[self._preset_index].name
         if not messagebox.askyesno("Apolo", t("dlg.remove_preset", name=name), parent=self._win):
             return
-        del self._presets[self._selected]
-        self._selected = None
+        del self._presets[self._preset_index]
+        self._preset_index = None
         self._refresh_list()
         self._select_preset(0)
 
@@ -869,7 +876,8 @@ class SettingsWindow:
         }
 
         old_language = self._config.get("ui_language") or AUTO
-        if config["ui_language"] != old_language:
+        language_changed = config["ui_language"] != old_language
+        if language_changed:
             validated = config_module.retranslate_presets(
                 validated, old_language, config["ui_language"]
             )
@@ -883,9 +891,35 @@ class SettingsWindow:
         except Exception as exc:
             messagebox.showerror("Apolo", t("dlg.save_failed", error=exc), parent=self._win)
             return
+        log.info("Configuracoes salvas em %s", config_module.config_dir())
 
-        self._close()
+        self._config = config
         self._on_saved()  # aplica idioma, atalhos e inicializacao automatica
+        if language_changed:
+            # A janela foi montada no idioma antigo: reabre no novo.
+            self._close()
+            self._root.after(50, lambda: self.open(saved=True))
+            return
+        if new_key:
+            self._api_key_var.set("")
+            self._api_key_hint_label.configure(text=self._api_key_hint())
+        self._show_saved()
+
+    def _show_saved(self) -> None:
+        if self._win is None or not self._win.winfo_exists():
+            return
+        if self._saved_job is not None:
+            self._win.after_cancel(self._saved_job)
+        self._saved_label.configure(text=t("cfg.saved"))
+
+        def clear() -> None:
+            self._saved_job = None
+            try:
+                self._saved_label.configure(text="")
+            except tk.TclError:
+                pass  # janela fechada nesse meio tempo
+
+        self._saved_job = self._win.after(_SAVED_MS, clear)
 
     def _reload_from_disk(self) -> None:
         """Recarrega o app e reabre a janela com o que esta no disco."""
@@ -897,7 +931,8 @@ class SettingsWindow:
         if self._test is not None:
             self._finish_test()
         win, self._win = self._win, None
-        self._selected = None
+        self._preset_index = None
+        self._saved_job = None  # o after morre junto com a janela
         if win is not None:
             try:
                 win.unbind_all("<MouseWheel>")
