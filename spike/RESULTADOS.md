@@ -75,3 +75,16 @@ Depois de ouvir, apague os WAVs (`del spike\out\*_teams.wav` etc.). Eles têm vo
 - **VAD:** `pysilero-vad`, limiares 0,5 para entrar em fala e 0,35 para sair.
 - **Chunker:** alvo 12 s, pausa curta 0,3 s, pausa longa 1,5 s, máximo 30 s, fala mínima 0,4 s, margem 0,2 s.
 - **STT:** `languages=["pt","en"]` + `keywords` (glossário global + do preset) + `prompt` com os últimos ~200 caracteres.
+
+## Daily de 28/10: canal "Outros" vazio (Teams + AirPods)
+
+A nota só teve as falas do "Eu". Pelos logs do Teams, a integração de chamada Bluetooth do Windows (`HfpVoipCallCoordinatorImpl`) **funcionou** nessa call. Na call de 27/10, que funcionou, ela tinha falhado (`Could not find call`). A suspeita é que, com ela ativa, o áudio vá para o endpoint escondido "Headset (AirPods Pro do Mat Hands-Free)" e não para "AirPods do Mat", que é o que o loopback ouvia.
+
+- **O que mudou no app:** o loopback soma todas as saídas ativas, inclusive as que aparecem no meio da call. O log registra quais saídas estão sendo ouvidas e quanta fala cada canal teve. O overlay avisa "Não estou ouvindo os outros" depois de 2 min sem fala no loopback, desde que você tenha falado pelo menos 20 s nesse intervalo.
+- **Falta confirmar:** rodar o diagnóstico durante uma call do Teams (a "chamada de teste" serve) e ver qual fonte tem som:
+
+```bat
+.venv\Scripts\python spike\call_diag.py --seconds 60
+```
+
+O script mede, por segundo, o loopback de cada saída e o **loopback por processo** do `ms-teams.exe` (`spike/proc_loopback.py`, validado com um tom local: −33,5 dBFS, o valor esperado). Se só o processo tiver som, o app passa a usar o loopback por processo.

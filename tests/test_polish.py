@@ -247,3 +247,114 @@ def test_loopback_asks_for_a_one_second_driver_buffer(monkeypatch):
     assert wait_for(lambda: sc.recorded)
     src.stop()
     assert sizes == [48000]
+
+
+# ------------------------------- loopback de todas as saidas (daily de 28/10)
+
+
+class LevelRecorder(FakeRecorder):
+    """Cada saida toca um nivel constante, para dar para ver a soma."""
+
+    def record(self, numframes):
+        time.sleep(0.005)
+        self.sc.recorded.append(self.name)
+        return np.full((numframes, 2), self.sc.levels.get(self.name, 0.0), dtype=np.float32)
+
+
+class LevelLoopback(FakeLoopback):
+    def recorder(self, samplerate, blocksize):
+        return LevelRecorder(self.sc, self.name)
+
+
+class TwoOutputs(FakeSoundcard):
+    def __init__(self):
+        super().__init__()
+        self.extra = [FakeSpeaker("Headset (Hands-Free)")]
+        self.levels = {"Caixa do notebook": 0.0, "Headset (Hands-Free)": 0.25}
+
+    def all_speakers(self):
+        return [self.default, *self.extra]
+
+    def get_microphone(self, id, include_loopback=False):
+        return LevelLoopback(self, id)
+
+
+def test_loopback_mixes_the_other_active_outputs(monkeypatch):
+    # A saida padrao esta muda; a call toca numa saida que nao e a padrao.
+    sc = TwoOutputs()
+    monkeypatch.setattr(sources_module, "_soundcard", lambda: sc)
+    monkeypatch.setattr(sources_module.SystemSource, "DEFAULT_CHECK_SECONDS", 0.0)
+    blocks = []
+    src = sources_module.SystemSource(lambda t, b: blocks.append(b))
+    src.start()
+    assert wait_for(lambda: len(blocks) > 30 and blocks[-1].max() > 0.2)
+    assert src.extra_names == ["Headset (Hands-Free)"]
+    assert src.device_name == "Caixa do notebook"
+
+    # A saida extra sumiu (a call acabou): para de ouvir e o canal volta a zero.
+    sc.extra = []
+    assert wait_for(lambda: not src.extra_names)
+    n = len(blocks)
+    assert wait_for(lambda: len(blocks) > n + 30)
+    assert not np.any(blocks[-1])
+    src.stop()
+    assert src.error is None
+
+
+def test_fixed_loopback_device_does_not_mix(monkeypatch):
+    sc = TwoOutputs()
+    monkeypatch.setattr(sources_module, "_soundcard", lambda: sc)
+    monkeypatch.setattr(sources_module.SystemSource, "DEFAULT_CHECK_SECONDS", 0.0)
+    blocks = []
+    src = sources_module.SystemSource(lambda t, b: blocks.append(b), device="Caixa do notebook")
+    src.start()
+    assert wait_for(lambda: len(blocks) > 30)
+    src.stop()
+    assert src.extra_names == [] and not any(np.any(b) for b in blocks)
+
+
+def test_failed_extra_output_is_not_retried_in_a_loop(monkeypatch):
+    sc = TwoOutputs()
+    opened = []
+
+    def get_microphone(id, include_loopback=False):
+        opened.append(id)
+        if id == "Headset (Hands-Free)":
+            raise RuntimeError("Error 0x88890004")
+        return LevelLoopback(sc, id)
+
+    monkeypatch.setattr(sc, "get_microphone", get_microphone)
+    monkeypatch.setattr(sources_module, "_soundcard", lambda: sc)
+    monkeypatch.setattr(sources_module.SystemSource, "DEFAULT_CHECK_SECONDS", 0.0)
+    src = sources_module.SystemSource(lambda t, b: None)
+    src.start()
+    assert wait_for(lambda: len(sc.recorded) > 50)
+    src.stop()
+    assert src.error is None  # a saida padrao seguiu gravando
+    assert opened.count("Headset (Hands-Free)") == 1
+
+
+def test_others_silent_alert(config, monkeypatch):
+    s, sources = live_session(config, monkeypatch)
+    t0 = s.started_at
+    # So voce falou, e bastante: depois de 2 min sem ninguem, avisa.
+    sources["mic"].feed(speech(25.0))
+    assert wait_for(lambda: s._my_speech_since_others >= 25.0)
+    s.check_limits(now=t0 + 60)
+    assert not s.others_silent
+    s.check_limits(now=t0 + 130)
+    assert s.others_silent
+    # Os outros apareceram: o aviso some.
+    sources["sys"].feed(speech())
+    assert wait_for(lambda: s._last_others_speech is not None)
+    s.check_limits(now=s._last_others_speech + 1)
+    assert not s.others_silent
+    s.stop()
+
+
+def test_others_silent_needs_my_speech(config, monkeypatch):
+    # Reuniao que ainda nao comecou (ninguem fala): nao e problema de saida.
+    s, _ = live_session(config, monkeypatch)
+    s.check_limits(now=s.started_at + 600)
+    assert not s.others_silent
+    s.stop()

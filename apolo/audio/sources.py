@@ -24,8 +24,10 @@ Regra do app: nada aqui levanta excecao para fora da thread. Um erro vira
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import queue
+import sys
 import threading
 import time
 import warnings
@@ -48,6 +50,9 @@ LOOPBACK_RATE = 48000
 LOOPBACK_BUFFER_SECONDS = 1.0
 # Fila de entrega maior que isso (em blocos) = o processamento nao acompanha.
 BACKLOG_WARN_BLOCKS = 50
+# Audio de uma saida extra guardado a espera da saida padrao. Mais que isso
+# e descartado: as placas tem relogios proprios e nao podem se afastar.
+EXTRA_BUFFER_SECONDS = 0.5
 
 
 # ------------------------------------------------------------ dispositivos
@@ -272,6 +277,7 @@ class MicSource(_Source):
             raise AudioError(t("err.mic_busy"), str(exc)) from exc
         except Exception as exc:
             raise AudioError(t("err.mic_open"), str(exc)) from exc
+        log.info("Mic: ouvindo '%s'", self.device_name or "padrao")
 
         try:
             while not self._stop.is_set():
@@ -293,15 +299,87 @@ class MicSource(_Source):
                 pass  # ja estamos encerrando
 
 
+def _com_init() -> None:
+    """O soundcard so inicializa o COM na thread que o importou."""
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+        except Exception:
+            pass
+
+
+class _ExtraLoopback:
+    """Loopback de uma saida que nao e a padrao, lido numa thread propria.
+
+    O SystemSource soma o que chega aqui no bloco da saida padrao. A saida
+    padrao dita o ritmo; esta so guarda ate EXTRA_BUFFER_SECONDS de audio
+    (o resto e descartado) para os relogios das duas placas nao se afastarem.
+    """
+
+    def __init__(self, sc, speaker):
+        self.name = speaker.name
+        self.error = ""
+        self._sc = sc
+        self._speaker = speaker
+        self._buffer = np.zeros(0, dtype=np.float32)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="capture-sys-extra", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def take(self, n: int) -> np.ndarray:
+        """As proximas `n` amostras (16 kHz), com zeros se faltar audio."""
+        with self._lock:
+            out, self._buffer = self._buffer[:n], self._buffer[n:]
+        if len(out) < n:
+            out = np.concatenate([out, np.zeros(n - len(out), dtype=np.float32)])
+        return out
+
+    def _run(self) -> None:
+        _com_init()
+        limit = int(SAMPLE_RATE * EXTRA_BUFFER_SECONDS)
+        try:
+            loopback = self._sc.get_microphone(id=str(self.name), include_loopback=True)
+            resampler = Resampler(LOOPBACK_RATE)
+            with loopback.recorder(
+                samplerate=LOOPBACK_RATE,
+                blocksize=int(LOOPBACK_RATE * LOOPBACK_BUFFER_SECONDS),
+            ) as recorder:
+                while not self._stop.is_set():
+                    block = resampler.process(
+                        recorder.record(numframes=int(LOOPBACK_RATE * BLOCK_SECONDS))
+                    )
+                    with self._lock:
+                        self._buffer = np.concatenate([self._buffer, block])[-limit:]
+        except Exception as exc:
+            self.error = repr(exc)
+
+
 class SystemSource(_Source):
-    """Loopback da saida padrao (ou da do config, por nome) via soundcard.
+    """Loopback das saidas de audio via soundcard: a padrao e as outras.
 
     Segue a saida padrao (risco R3 do PLANO.md): se voce conecta o fone no
     meio da reuniao e o Windows passa a tocar nele, o loopback antigo ficaria
     ouvindo a caixa muda. A cada DEFAULT_CHECK_SECONDS ele confere a saida
     padrao e, se mudou, reabre o loopback na nova. O buraco de ~0,1 s na
-    troca o relogio do pipeline cobre. Com `loopback_device` fixo no config
-    nao ha o que seguir.
+    troca o relogio do pipeline cobre.
+
+    Alem da padrao, ouve TODAS as outras saidas ativas e soma o audio delas
+    (daily de 28/10: o Teams tocava numa saida que nao era a padrao, e o
+    canal "Outros" saiu vazio). Saidas que aparecem no meio da call (o
+    "Hands-Free" do Bluetooth) entram na proxima conferida.
+
+    Com `loopback_device` fixo no config, so aquela saida, sem seguir nada.
     """
 
     channel = "sys"
@@ -310,6 +388,12 @@ class SystemSource(_Source):
     def __init__(self, on_block: BlockCallback, device: str | None = None):
         super().__init__(on_block, device)
         self.switches = 0  # quantas vezes trocou de saida no meio
+        self._extras: dict[str, _ExtraLoopback] = {}
+        self._failed: set[str] = set()
+
+    @property
+    def extra_names(self) -> list[str]:
+        return list(self._extras)
 
     def _speaker(self, sc):
         if self.device:
@@ -327,9 +411,50 @@ class SystemSource(_Source):
             sc = _soundcard()
         except Exception as exc:
             raise AudioError(t("err.loopback_open"), str(exc)) from exc
-        while not self._stop.is_set():
-            # Volta aqui so quando a saida padrao muda; o resto sai do metodo.
-            self._record(sc, self._speaker(sc))
+        try:
+            while not self._stop.is_set():
+                # Volta aqui so quando a saida padrao muda; o resto sai do metodo.
+                self._record(sc, self._speaker(sc))
+        finally:
+            for extra in self._extras.values():
+                extra.stop()
+            self._extras = {}
+
+    def _sync_extras(self, sc, primary) -> None:
+        """Abre o loopback das saidas novas e fecha o das que sumiram."""
+        if self.device is not None:
+            return
+        try:
+            names = {s.name: s for s in sc.all_speakers()}
+        except Exception:
+            return  # consulta falhou agora; tenta na proxima
+        names.pop(primary.name, None)
+        for name in list(self._extras):
+            extra = self._extras[name]
+            if name not in names or not extra.alive:
+                extra.stop()
+                del self._extras[name]
+                if extra.error:
+                    self._failed.add(name)
+                    log.warning("Loopback de '%s' falhou: %s", name, extra.error)
+                else:
+                    log.info("Loopback: parei de ouvir '%s'", name)
+        # Saida que falhou so e tentada de novo depois de sumir e voltar.
+        self._failed &= set(names)
+        for name, speaker in names.items():
+            if name not in self._extras and name not in self._failed:
+                extra = _ExtraLoopback(sc, speaker)
+                extra.start()
+                self._extras[name] = extra
+                log.info("Loopback: ouvindo tambem '%s'", name)
+
+    def _mix(self, block: np.ndarray) -> np.ndarray:
+        if not self._extras or not len(block):
+            return block
+        mixed = block.copy()
+        for extra in list(self._extras.values()):
+            mixed += extra.take(len(block))
+        return np.clip(mixed, -1.0, 1.0)
 
     def _record(self, sc, speaker) -> None:
         """Grava do loopback de `speaker` ate parar ou a saida padrao mudar."""
@@ -338,6 +463,9 @@ class SystemSource(_Source):
             loopback = sc.get_microphone(id=str(speaker.name), include_loopback=True)
         except Exception as exc:
             raise AudioError(t("err.loopback_open"), str(exc)) from exc
+        log.info("Loopback: ouvindo '%s' (saida %s)", speaker.name,
+                 "do config" if self.device else "padrao")
+        self._sync_extras(sc, speaker)
 
         numframes = int(LOOPBACK_RATE * BLOCK_SECONDS)
         resampler = Resampler(LOOPBACK_RATE)
@@ -359,11 +487,12 @@ class SystemSource(_Source):
                 except Exception as exc:
                     raise AudioError(t("err.loopback_lost"), str(exc)) from exc
                 t_arrival = time.monotonic()
-                self._deliver(t_arrival, resampler.process(data))
+                self._deliver(t_arrival, self._mix(resampler.process(data)))
                 if self.device is None and t_arrival >= next_check:
                     next_check = t_arrival + self.DEFAULT_CHECK_SECONDS
                     if self._default_changed(sc, speaker):
                         return
+                    self._sync_extras(sc, speaker)
         finally:
             try:
                 recorder.__exit__(None, None, None)

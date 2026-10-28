@@ -97,6 +97,8 @@ class AppController:
         self._hotkeys = HotkeyManager(self._on_hotkey_event)
         # Ultimo alerta de silencio ja notificado, para nao repetir a cada minuto.
         self._silence_notified = 0
+        # "Nao estou ouvindo os outros" ja notificado nesta crise.
+        self._others_notified = False
 
     # ------------------------------------------------------- ciclo de vida
 
@@ -358,6 +360,7 @@ class AppController:
                 if self._state is State.PREPARING:
                     self._state = State.RECORDING
                     self._silence_notified = 0
+                    self._others_notified = False
             notify = ""
             if s.limit_reached:
                 notify = t("status.limit_reached", hours=self.config.get("max_session_hours"))
@@ -366,6 +369,11 @@ class AppController:
                 notify = t("status.silent", minutes=s.silent_minutes)
             elif not s.silent_minutes:
                 self._silence_notified = 0
+            if s.others_silent and not self._others_notified and not notify:
+                self._others_notified = True
+                notify = t("status.others_silent")
+            elif not s.others_silent:
+                self._others_notified = False
             self._emit(Status("recording", detail=_recording_detail(s),
                               preset=s.preset, started_at=s.started_at, notify=notify))
             if s.limit_reached:
@@ -463,6 +471,8 @@ def _recording_detail(s: SessionStatus) -> str:
         parts.append(t("status.silent", minutes=s.silent_minutes))
     for channel in s.channel_problems:
         parts.append(t(f"status.channel_down.{channel}"))
+    if s.others_silent and "sys" not in s.channel_problems:
+        parts.append(t("status.others_silent"))
     # Fila normal (1-2 trechos) nao interessa; so quando esta acumulando.
     if s.offline or s.retrying or s.pending > 3:
         parts.append(_queue_detail(s))

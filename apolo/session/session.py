@@ -53,6 +53,11 @@ log = logging.getLogger(__name__)
 FIRST_BLOCK_TIMEOUT = 5.0
 # Intervalo minimo entre duas escritas da nota ao vivo.
 NOTE_INTERVAL = 1.5
+# "Nao estou ouvindo os outros": tanto tempo sem fala no loopback enquanto
+# voce falou pelo menos MY_SPEECH_FOR_ALERT. Na daily de 28/10 o loopback
+# ouviu a saida errada a reuniao inteira e ninguem percebeu ate o fim.
+OTHERS_SILENT_SECONDS = 120.0
+MY_SPEECH_FOR_ALERT = 20.0
 
 PREPARING = "preparing"
 RECORDING = "recording"
@@ -92,6 +97,9 @@ class SessionStatus:
     silent_minutes: int = 0
     # Gravando ha mais que `max_session_hours`: o app para sozinho.
     limit_reached: bool = False
+    # Voce fala e o canal "Outros" segue mudo: a call deve estar tocando
+    # numa saida que o Apolo nao ouve.
+    others_silent: bool = False
     # Em DONE: ninguem falou, a nota foi descartada.
     discarded: bool = False
 
@@ -173,7 +181,11 @@ class MeetingSession:
         self.silent_minutes = 0
         self.limit_reached = False
         self.discarded = False
+        self.others_silent = False
         self._last_speech: float | None = None
+        self._last_others_speech: float | None = None
+        # Segundos de fala no mic desde a ultima fala no loopback.
+        self._my_speech_since_others = 0.0
         self._t0 = 0.0
         self._dirty = threading.Event()
         self._stop_note = threading.Event()
@@ -313,6 +325,9 @@ class MeetingSession:
                 log.exception("Nao consegui apagar o spool da sessao que falhou")
         self.phase = ERROR
 
+    def _source(self, channel: str):
+        return next((src for src in self._sources if src.channel == channel), None)
+
     def _feeder(self, channel: str):
         pipeline = self._pipelines[channel]
 
@@ -325,8 +340,14 @@ class MeetingSession:
                 self._audio.write(channel, block)
             before = pipeline.speech_seconds
             self._handle(pipeline.push(t_arrival, block))
-            if pipeline.speech_seconds > before:
+            spoke = pipeline.speech_seconds - before
+            if spoke > 0:
                 self._last_speech = time.monotonic()
+                if channel == "sys":
+                    self._last_others_speech = self._last_speech
+                    self._my_speech_since_others = 0.0
+                else:
+                    self._my_speech_since_others += spoke
 
         return on_block
 
@@ -348,6 +369,20 @@ class MeetingSession:
         alert = float(self.config.get("silence_alert_minutes") or 0) * 60
         quiet = now - max(self._last_speech or 0.0, self.started_at)
         self.silent_minutes = int(quiet // 60) if alert > 0 and quiet >= alert else 0
+        others_quiet = now - max(self._last_others_speech or 0.0, self.started_at)
+        silent = (
+            others_quiet >= OTHERS_SILENT_SECONDS
+            and self._my_speech_since_others >= MY_SPEECH_FOR_ALERT
+        )
+        if silent and not self.others_silent:
+            src = self._source("sys")
+            outputs = [getattr(src, "device_name", ""), *getattr(src, "extra_names", [])]
+            log.warning(
+                "Canal Outros sem fala ha %.0f s, com %.0f s de fala no mic. "
+                "A call pode estar tocando numa saida que nao estou ouvindo (ouvindo: %s).",
+                others_quiet, self._my_speech_since_others, ", ".join(filter(None, outputs)) or "-",
+            )
+        self.others_silent = silent
         limit = float(self.config.get("max_session_hours") or 0) * 3600
         if limit > 0 and now - self.started_at >= limit and not self.limit_reached:
             log.warning("Teto de %.1f h atingido; parando sozinho.", limit / 3600)
@@ -378,6 +413,12 @@ class MeetingSession:
         if self._audio is not None:
             self._audio.close()
         self.meta.duration_seconds = time.monotonic() - (self.started_at or self._t0)
+        log.info(
+            "Fala detectada: mic %.0f s, outros %.0f s em %.0f s de gravacao",
+            *(self._pipelines[c].speech_seconds if c in self._pipelines else 0.0
+              for c in ("mic", "sys")),
+            self.meta.duration_seconds,
+        )
         try:
             self.spool.update(duration_seconds=round(self.meta.duration_seconds, 1))
         except ApoloError as exc:
@@ -541,6 +582,7 @@ class MeetingSession:
             mic_paused=self.mic_paused and self.phase == RECORDING,
             silent_minutes=self.silent_minutes if self.phase == RECORDING else 0,
             limit_reached=self.limit_reached,
+            others_silent=self.others_silent and self.phase == RECORDING,
             discarded=self.discarded,
         )
         if not force and status == self._last_status:
