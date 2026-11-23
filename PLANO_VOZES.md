@@ -94,6 +94,13 @@ Como no plano principal: cada fase termina com algo testável, com um commit por
 
 **Pronto quando:** as letras se mantêm entre janelas, a identificação acerta e a última janela fica pronta em menos de ~1 min depois do Parar.
 
+**Resultado (23/11, `spike/vozes_v0.py`):**
+- **Janelas:** as letras se mantiveram. Com as amostras da janela 1, as janelas 2 a 4 devolveram V1 (Marcos) e V2 (Fernando) direto, e a reunião toda bateu **88%** com a separação do arquivo inteiro. Só o "valeu" do fim voltou como voz nova.
+- **Tempo:** ~100 s por janela de 4 min (0,4× o tempo do áudio). A última janela depois do Parar passaria de 1 min. → **Janelas de 2 min** (~50 s para a última).
+- **Identificação com a biblioteca completa:** acertou os dois nomes, em 12 s.
+- **Identificação com a biblioteca incompleta (só o Fernando): ERROU.** Deu o nome "Fernando" ao Marcos e deixou o Fernando de verdade como voz nova. O modelo **distribui** os nomes que recebe entre as vozes, não confere se a voz é mesmo daquela pessoa. → Regra: sugestão automática só quando **todas** as vozes da reunião têm amostra na biblioteca. Se faltar alguém, todas as sugestões aparecem como "a confirmar" no ▶.
+- **Casamento com a nota:** das 43 falas de "Outros", 29 ficaram com uma voz só, 8 mistas e 6 sem voz (falas curtas que o diarize não marcou). O número é pessimista: o teste usou os parágrafos já juntados da nota, com o fim estimado. No app, os trechos de ~12 s têm início e fim exatos. Fala sem voz herda a voz do vizinho mais próximo.
+
 ### Fase V1: modelo e nota
 `Segment.voice`, mapa de nomes, `speaker_labels`, `reparse`, prompt do resumo e o módulo da biblioteca (`voices.py`), tudo com testes. Ainda sem chamar a API.
 
