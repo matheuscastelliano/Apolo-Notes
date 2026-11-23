@@ -339,7 +339,7 @@ O maior risco técnico vem primeiro.
 - Captura só do processo da reunião (Win process loopback / nó PipeWire)
 - Cancelamento de eco (WebRTC AEC) para usar sem fone
 - Providers locais: faster-whisper (STT) e Ollama/llama.cpp (resumo)
-- Diarização dos "Outros"
+- Diarização dos "Outros": plano em [PLANO_VOZES.md](PLANO_VOZES.md)
 - Resumo map-reduce para reuniões muito longas
 - Empacotamento (instalador)
 
