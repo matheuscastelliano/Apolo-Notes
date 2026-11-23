@@ -280,3 +280,45 @@ def test_parse_markdown_result_variants():
     assert (r.title, r.body_markdown) == ("Kickoff do projeto", "## Temas\n- a")
     r = parse_markdown_result("## Resumo\nsem titulo")
     assert (r.title, r.body_markdown) == ("Reunião", "## Resumo\nsem titulo")
+
+
+# ------------------------------------------------------------ diarize
+
+
+def test_diarize_sends_references_and_parses_segments():
+    class Result:
+        def model_dump(self):
+            return {"segments": [
+                {"start": 0.0, "end": 2.5, "speaker": "V1", "text": "oi"},
+                {"start": 2.5, "end": 2.5, "speaker": "A", "text": ""},  # vazio: fora
+                {"start": 3.0, "end": 5.0, "speaker": "A", "text": "tudo bem"},
+                {"start": "x"},
+            ]}
+
+    stt = FakeEndpoint(Result())
+    provider = make_provider(stt, diarize_model="gpt-4o-transcribe-diarize")
+    segs = provider.diarize(b"RIFFwav", references={"V1": b"RIFFref"}, languages=["pt", "en"])
+    assert [(s.start, s.end, s.speaker) for s in segs] == [(0.0, 2.5, "V1"), (3.0, 5.0, "A")]
+    params = stt.calls[0]
+    assert params["model"] == "gpt-4o-transcribe-diarize"
+    assert params["response_format"] == "diarized_json"
+    assert params["chunking_strategy"] == "auto"
+    assert params["language"] == "pt"
+    extra = params["extra_body"]
+    assert extra["known_speaker_names"] == ["V1"]
+    assert extra["known_speaker_references"][0].startswith("data:audio/wav;base64,")
+
+
+def test_diarize_without_references_and_errors_are_wrapped():
+    from apolo.errors import DiarizationError
+
+    stt = FakeEndpoint({"segments": []})
+    provider = make_provider(stt)
+    assert provider.diarize(b"RIFF") == []
+    assert "extra_body" not in stt.calls[0]
+    failing = make_provider(FakeEndpoint(openai.APIConnectionError(request=_REQUEST)))
+    with pytest.raises(OfflineError):
+        failing.diarize(b"RIFF")
+    bad = make_provider(FakeEndpoint(status_error(openai.BadRequestError, 400)))
+    with pytest.raises(DiarizationError):
+        bad.diarize(b"RIFF")

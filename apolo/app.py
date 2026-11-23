@@ -340,6 +340,7 @@ class AppController:
             text_model=self.config["text_model"],
             timeout=float(self.config.get("request_timeout", 60)),
             summary_timeout=float(self.config.get("summary_timeout", 180)),
+            diarize_model=str(self.config.get("diarize_model") or "gpt-4o-transcribe-diarize"),
         )
 
     # ------------------------------------------------------ sessao -> UI

@@ -10,8 +10,10 @@ Uma sessao retomada (crash, app fechado no meio) entra direto em DRAINING
 por `resume()`, com o que sobrou no spool.
 
 Threads (alem das de captura e das de STT):
-  `note` - reescreve a nota ao vivo quando chega trecho novo (no maximo uma
-           vez por NOTE_INTERVAL) e avisa a UI quando o estado muda.
+  `note`   - reescreve a nota ao vivo quando chega trecho novo (no maximo uma
+             vez por NOTE_INTERVAL) e avisa a UI quando o estado muda.
+  `voices` - separa as vozes dos "Outros" em janelas (voices/tracker.py),
+             quando `voices_enabled` e o provider sabe separar.
 
 O audio vai das fontes para o pipeline (VAD + chunker) na propria thread de
 captura, e cada trecho cortado vai direto para o spool e para a fila. Nada
@@ -38,13 +40,17 @@ from ..audio.resample import SAMPLE_RATE
 from ..audio.sources import MicSource, SystemSource
 from ..errors import ApoloError, AudioError
 from ..i18n import t
-from ..notes.render import NoteMeta
+from ..notes.render import NoteMeta, guests
 from ..notes.writer import NoteWriter
 from ..presets import SummaryPreset
 from ..providers.base import Segment, Summarizer, Transcriber
 from .spool import Spool, SpoolSession
 from .summary import FinalizeChoice, build_summary
 from .transcript import TranscriptStore, spool_gaps
+from ..voices.identify import VoiceReview, build_review
+from ..voices.library import VoiceLibrary
+from ..voices.timeline import assign_voices
+from ..voices.tracker import VoiceTracker
 from .workers import SttQueue
 
 log = logging.getLogger(__name__)
@@ -102,6 +108,10 @@ class SessionStatus:
     others_silent: bool = False
     # Em DONE: ninguem falou, a nota foi descartada.
     discarded: bool = False
+    # Em DRAINING: a transcricao acabou, falta separar as ultimas vozes.
+    voices_pending: bool = False
+    # Reconhecendo quem e cada voz (entre READY e o resumo).
+    identifying: bool = False
 
 
 class AudioKeeper:
@@ -157,6 +167,7 @@ class MeetingSession:
         on_status: Callable[[SessionStatus], None],
         source_factory: SourceFactory = default_source_factory,
         backoff_initial: float = 1.0,
+        library: VoiceLibrary | None = None,
     ):
         self.config = config
         self.preset = preset
@@ -172,6 +183,12 @@ class MeetingSession:
         self.store: TranscriptStore | None = None
         self.writer: NoteWriter | None = None
         self.queue: SttQueue | None = None
+        self.tracker: VoiceTracker | None = None
+        # "Quem esta na reuniao", informado durante a gravacao (opcional).
+        self.expected_participants: list[str] = []
+        self._library = library
+        self._voices_pending = False
+        self._identifying = False
         self.meta: NoteMeta | None = None
         self.summary_error: ApoloError | None = None
         self._sources: list = []
@@ -208,7 +225,8 @@ class MeetingSession:
         )
         try:
             self.writer = NoteWriter(config_module.notes_dir(self.config), self.started_wall)
-            self.spool.update(note_path=str(self.writer.path))
+            self.spool.update(note_path=str(self.writer.path),
+                              expected_participants=self.expected_participants)
             self._setup(self.started_wall)
             if self.config.get("save_audio"):
                 self._audio = AudioKeeper(self._audio_dir())
@@ -218,6 +236,8 @@ class MeetingSession:
             raise
 
         self.queue.start()
+        if self.tracker is not None:
+            self.tracker.start()
         self.started_at = time.monotonic()
         self.phase = RECORDING
         self.writer.write_live(self.meta, [])
@@ -260,8 +280,12 @@ class MeetingSession:
         ends = [s.end for s in session.store.segments()] + [s.end for s in spool.pending()]
         session.meta.duration_seconds = float(info.get("duration_seconds") or max(ends, default=0.0))
         session.phase = DRAINING
+        session.expected_participants = [str(p) for p in info.get("expected_participants") or []]
+        session._apply_expected()  # _setup ja rodou, antes de saber quem estava
         session.queue.submit_pending()
         session.queue.start()
+        if session.tracker is not None:
+            session.tracker.start()
         session._start_note_thread()
         log.info("Retomando a sessao %s (%d trechos pendentes)", spool.id, session.queue.pending_count())
         session._emit(force=True)
@@ -286,6 +310,48 @@ class MeetingSession:
             on_change=self._dirty.set,
             backoff_initial=self.backoff_initial,
         )
+        if self.config.get("voices_enabled", True) and hasattr(self.transcriber, "diarize"):
+            self.tracker = VoiceTracker(
+                self.transcriber,
+                self.spool.dir,
+                window_seconds=float(self.config.get("voice_window_seconds") or 120),
+                languages=self.preset.languages or self.config.get("languages"),
+                on_change=self._dirty.set,
+                backoff_initial=self.backoff_initial,
+            )
+            self._apply_expected()
+
+    @property
+    def library(self) -> VoiceLibrary:
+        if self._library is None:
+            self._library = VoiceLibrary()
+        return self._library
+
+    # ------------------------------------------------- quem esta na reuniao
+
+    def set_expected_participants(self, names: list[str]) -> None:
+        """Quem esta na reuniao, dito durante a gravacao. Com uma pessoa so,
+        separar vozes nao serve para nada e a separacao pausa."""
+        self.expected_participants = [n.strip() for n in names if n and n.strip()]
+        if self.spool is not None:
+            try:
+                self.spool.update(expected_participants=self.expected_participants)
+            except ApoloError as exc:
+                log.error("Spool: %s", exc)
+        self._apply_expected()
+        log.info("Quem esta: %s", ", ".join(self.expected_participants) or "-")
+
+    def _apply_expected(self) -> None:
+        if self.tracker is not None:
+            people = guests(self.expected_participants, str(self.config.get("my_name") or ""))
+            self.tracker.set_paused(len(people) == 1)
+
+    def _voices_active(self, participants: list[str]) -> bool:
+        """As vozes valem para esta nota? Nao numa conversa a dois: ali o
+        nome do outro participante ja diz tudo (de34905)."""
+        if self.tracker is None:
+            return False
+        return len(guests(participants, str(self.config.get("my_name") or ""))) != 1
 
     def _audio_dir(self) -> Path:
         base = self.config.get("audio_dir")
@@ -398,6 +464,8 @@ class MeetingSession:
                 log.error("Spool: %s", exc)
                 continue
             self.queue.submit(seg)
+            if chunk.channel == "sys" and self.tracker is not None:
+                self.tracker.add(chunk.start, chunk.pcm)
             self._dirty.set()
 
     # ----------------------------------------------------------------- stop
@@ -438,6 +506,7 @@ class MeetingSession:
             if self.queue.fatal is not None:
                 break
             self._emit()
+        self._drain_voices()
 
         self._stop_note.set()
         if self._note_thread is not None:
@@ -454,6 +523,72 @@ class MeetingSession:
         self._emit(force=True)
         return self.writer.path
 
+    def _drain_voices(self) -> None:
+        """A ultima janela de vozes. Espera ate `voice_wait_seconds`; o que
+        nao chegar a tempo sai como "Outros" - a nota nunca fica presa."""
+        tracker = self.tracker
+        if tracker is None or self.queue.fatal is not None:
+            return
+        if not tracker.paused:
+            tracker.flush()
+        if tracker.busy():
+            self._voices_pending = True
+            deadline = time.monotonic() + float(self.config.get("voice_wait_seconds") or 240)
+            while not tracker.wait_idle(timeout=1.0):
+                self._emit()
+                if time.monotonic() > deadline:
+                    log.warning("Vozes: a ultima janela nao ficou pronta a tempo.")
+                    break
+            self._voices_pending = False
+        tracker.stop(timeout=1.0)
+
+    def voice_review(self, participants: list[str]) -> VoiceReview | None:
+        """Vozes para o "Quem e quem", com as sugestoes da biblioteca.
+
+        Faz uma ou duas chamadas curtas a API (~10 s cada). None = nada a
+        perguntar. Nunca levanta: sem validacao, a nota sai com "Voz A".
+        """
+        if self.phase != READY or not self._voices_active(participants):
+            return None
+        self._identifying = True
+        self._emit(force=True)
+        try:
+            entries = assign_voices(self.store.segments(), self.tracker.timeline())
+            return build_review(
+                self.tracker, entries, participants, str(self.config.get("my_name") or ""),
+                self.library, self.transcriber,
+                self.preset.languages or self.config.get("languages"),
+            )
+        except Exception:
+            log.exception("Vozes: falha ao montar a validacao")
+            return None
+        finally:
+            self._identifying = False
+            self._emit(force=True)
+
+    def _apply_voices(self, choice: FinalizeChoice, entries: list) -> list:
+        """Poe as vozes nas falas e os nomes escolhidos na nota."""
+        if not self._voices_active(self.meta.participants):
+            return entries
+        entries = assign_voices(entries, self.tracker.timeline())
+        names = {v: n.strip() for v, n in (choice.voice_names or {}).items() if n and n.strip()}
+        self.meta.voice_names = names
+        # Quem ganhou nome estava na reuniao: entra na lista (e o "Resumir de
+        # novo" reconhece o nome como alguem dos "Outros").
+        for name in names.values():
+            if not any(p.casefold() == name.casefold() for p in self.meta.participants):
+                self.meta.participants.append(name)
+        if choice.save_voices and names:
+            for voice, name in names.items():
+                clip = self.tracker.clip_pcm(voice)
+                if clip is None or not len(clip):
+                    continue
+                try:
+                    self.library.add_sample(name, clip)
+                except Exception as exc:
+                    log.error("Vozes: nao consegui guardar a amostra de %s: %s", name, exc)
+        return entries
+
     def finalize(self, choice: FinalizeChoice, summarizer: Summarizer) -> Path | None:
         """Resumo, nota final, nome com o titulo, spool apagado. Bloqueia.
 
@@ -469,6 +604,7 @@ class MeetingSession:
         self.meta.title = choice.title.strip()
         self.meta.participants = list(choice.participants)
         entries = self.store.visible(spool_gaps(self.spool.gaps()), None)
+        entries = self._apply_voices(choice, entries)
         user_notes = self.writer.user_notes()
         if not user_notes and not any(isinstance(e, Segment) and e.text.strip() for e in entries):
             # Ninguem falou e voce nao anotou nada (iniciou sem querer, a
@@ -515,6 +651,8 @@ class MeetingSession:
         self._stop_note.set()
         if self.queue is not None:
             self.queue.stop(timeout=1.0)
+        if self.tracker is not None:
+            self.tracker.stop(timeout=1.0)
         if self.writer is not None and self.meta is not None and self.phase in (
             RECORDING, DRAINING, PREPARING
         ):
@@ -558,6 +696,9 @@ class MeetingSession:
             self.meta.duration_seconds = time.monotonic() - (self.started_at or self._t0)
         pending_from = self.queue.pending_from() if self.queue else None
         entries = self.store.visible(spool_gaps(self.spool.gaps()), pending_from)
+        if self.tracker is not None and not self.tracker.paused:
+            # Ao vivo: "Voz A", "Voz B". Os nomes so vem no fim.
+            entries = assign_voices(entries, self.tracker.timeline())
         self.writer.write_live(self.meta, entries)
 
     # --------------------------------------------------------------- status
@@ -585,6 +726,8 @@ class MeetingSession:
             limit_reached=self.limit_reached,
             others_silent=self.others_silent and self.phase == RECORDING,
             discarded=self.discarded,
+            voices_pending=self._voices_pending,
+            identifying=self._identifying,
         )
         if not force and status == self._last_status:
             return

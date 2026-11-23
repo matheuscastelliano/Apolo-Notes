@@ -37,6 +37,10 @@ class FinalizeChoice:
     preset: SummaryPreset
     title: str = ""
     participants: list[str] = field(default_factory=list)
+    # "Quem e quem": voz -> nome (vazio = nao sei). None = nao perguntou.
+    voice_names: dict[str, str] | None = None
+    # Guardar a amostra de quem ganhou nome, para reconhecer da proxima vez.
+    save_voices: bool = True
 
 
 def build_summary(

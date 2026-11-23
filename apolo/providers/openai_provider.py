@@ -18,6 +18,7 @@ schema, pede Markdown puro com o titulo na 1a linha.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any
@@ -27,6 +28,7 @@ import openai
 from ..errors import (
     ApoloError,
     CredentialsError,
+    DiarizationError,
     OfflineError,
     ProviderTimeoutError,
     RateLimitedError,
@@ -35,7 +37,7 @@ from ..errors import (
     TranscriptionError,
 )
 from ..i18n import t
-from .base import SummaryRequest, SummaryResult, normalize_tags
+from .base import DiarSegment, SummaryRequest, SummaryResult, normalize_tags
 
 log = logging.getLogger(__name__)
 
@@ -72,9 +74,13 @@ class OpenAIProvider:
         max_retries: int = 0,
         client: Any = None,
         summary_timeout: float = 180.0,
+        diarize_model: str = "gpt-4o-transcribe-diarize",
     ):
         self.stt_model = stt_model
         self.text_model = text_model
+        # Separacao de vozes (PLANO_VOZES.md). Uma janela de 2 min de fala
+        # levou ~50 s na fase V0: usa o prazo do resumo, nao o do STT.
+        self.diarize_model = diarize_model
         # O resumo de uma reuniao de 1-2 h pode levar bem mais que um trecho
         # de 12 s para transcrever: prazo proprio (no 1o teste real, 60 s nao
         # bastaram).
@@ -165,6 +171,53 @@ class OpenAIProvider:
             self._unsupported.add(name)
             return name
         return None
+
+    # ---------------------------------------------------- vozes (diarize)
+
+    def diarize(
+        self,
+        wav: bytes,
+        *,
+        references: dict[str, bytes] | None = None,
+        languages: list[str] | None = None,
+    ) -> list[DiarSegment]:
+        """Quem falou quando. Na fase V0, `known_speaker_*` so passou pelo
+        `extra_body`; o SDK ainda nao tem os parametros."""
+        params: dict[str, Any] = {
+            "model": self.diarize_model,
+            "file": ("audio.wav", wav, "audio/wav"),
+            "response_format": "diarized_json",
+            # Obrigatorio nos modelos de diarizacao para audio > 30 s.
+            "chunking_strategy": "auto",
+            "timeout": self.summary_timeout,
+        }
+        if languages:
+            params["language"] = languages[0]
+        if references:
+            names = list(references)
+            params["extra_body"] = {
+                "known_speaker_names": names,
+                "known_speaker_references": [
+                    "data:audio/wav;base64," + base64.b64encode(references[n]).decode()
+                    for n in names
+                ],
+            }
+        try:
+            result = self._client.audio.transcriptions.create(**params)
+        except Exception as exc:
+            raise self._wrap(exc, DiarizationError, "err.diarize_failed")
+        data = result.model_dump() if hasattr(result, "model_dump") else result
+        segments = (data or {}).get("segments") if isinstance(data, dict) else None
+        out = []
+        for seg in segments or []:
+            try:
+                start, end = float(seg["start"]), float(seg["end"])
+                speaker = str(seg["speaker"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if end > start and speaker:
+                out.append(DiarSegment(start, end, speaker))
+        return out
 
     # ------------------------------------------------------------- resumo
 

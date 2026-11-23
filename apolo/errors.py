@@ -37,6 +37,10 @@ class TranscriptionError(ApoloError):
     """Falha na chamada de speech-to-text."""
 
 
+class DiarizationError(ApoloError):
+    """A separacao de vozes falhou. Nunca derruba a nota: ela sai sem nomes."""
+
+
 class SummaryError(ApoloError):
     """Falha ao gerar o resumo da reuniao."""
 

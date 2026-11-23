@@ -52,6 +52,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "spool_dir": None,
     # Guardar o audio da reuniao (FLAC por canal). Desligado por padrao.
     "save_audio": False,
+    # Quem falou o que nos "Outros" (PLANO_VOZES.md): separa as vozes em
+    # janelas de `voice_window_seconds` de fala durante a reuniao e, no fim,
+    # espera ate `voice_wait_seconds` pela ultima janela.
+    "voices_enabled": True,
+    "diarize_model": "gpt-4o-transcribe-diarize",
+    "voice_window_seconds": 120,
+    "voice_wait_seconds": 240,
     "audio_dir": None,
     "default_preset": "geral",
     # ask | auto - ver ON_STOP_MODES.
