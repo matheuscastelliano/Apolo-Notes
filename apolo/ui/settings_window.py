@@ -22,7 +22,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import font as tkfont
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Callable
 
 import numpy as np
@@ -118,6 +118,7 @@ class SettingsWindow:
         notebook.add(self._build_audio(notebook), text=t("cfg.tab.audio"))
         notebook.add(self._build_notes(notebook), text=t("cfg.tab.notes"))
         notebook.add(self._build_presets(notebook), text=t("cfg.tab.presets"))
+        notebook.add(self._build_voices(notebook), text=t("cfg.tab.voices"))
         if self._presets:
             self._select_preset(0)
 
@@ -585,6 +586,116 @@ class SettingsWindow:
                           "cfg.max_hours.hint")
         return page
 
+    # ------------------------------------------------------------- Vozes
+
+    def _build_voices(self, parent) -> ttk.Frame:
+        """Separar vozes (liga/desliga) e a biblioteca de vozes guardadas.
+
+        Apagar e renomear valem na hora, sem o Salvar: e o que o usuario
+        espera de "apagar meus dados", e a biblioteca nao e config.json.
+        """
+        page = ttk.Frame(parent)
+        body = self._scrollable(page)
+
+        who = self._section(body, "cfg.section.voices")
+        row = 0
+        self._voices_enabled_var = tk.BooleanVar(
+            value=bool(self._config.get("voices_enabled", True))
+        )
+        row = self._check(who, row, "cfg.voices_enabled", self._voices_enabled_var,
+                          "cfg.voices_enabled.hint")
+
+        saved = self._section(body, "cfg.section.voice_library")
+        saved.columnconfigure(0, weight=1)
+        self._hint(saved, t("cfg.voice_library.hint")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+        tree = ttk.Treeview(saved, columns=("samples", "updated"), height=7,
+                            selectmode="browse")
+        tree.heading("#0", text=t("cfg.voice_library.name"))
+        tree.heading("samples", text=t("cfg.voice_library.samples"))
+        tree.heading("updated", text=t("cfg.voice_library.updated"))
+        tree.column("#0", width=220)
+        tree.column("samples", width=80, anchor="center")
+        tree.column("updated", width=140)
+        tree.grid(row=1, column=0, sticky="nsew")
+        self._voice_tree = tree
+
+        buttons = ttk.Frame(saved)
+        buttons.grid(row=1, column=1, sticky="n", padx=(10, 0))
+        for key, command in (
+            ("cfg.voice_library.play", self._play_voice),
+            ("cfg.voice_library.rename", self._rename_voice),
+            ("cfg.voice_library.delete", self._delete_voice),
+            ("cfg.voice_library.delete_all", self._delete_all_voices),
+        ):
+            ttk.Button(buttons, text=t(key), command=command).pack(fill="x", pady=(0, 6))
+        self._refresh_voices()
+        return page
+
+    def _library(self):
+        from ..voices.library import VoiceLibrary
+
+        return VoiceLibrary()
+
+    def _refresh_voices(self) -> None:
+        tree = self._voice_tree
+        tree.delete(*tree.get_children())
+        for person in self._library().people():
+            updated = person.updated[:16].replace("T", " ")
+            tree.insert("", "end", iid=person.id, text=person.name,
+                        values=(len(person.samples), updated))
+
+    def _selected_person(self):
+        selection = self._voice_tree.selection()
+        if not selection:
+            return None, None
+        library = self._library()
+        person = next((p for p in library.people() if p.id == selection[0]), None)
+        return library, person
+
+    def _play_voice(self) -> None:
+        library, person = self._selected_person()
+        if person is None:
+            return
+        from ..voices.tracker import read_pcm
+        from . import audio_play
+
+        for path in library.sample_paths(person):
+            try:
+                audio_play.play(read_pcm(path))
+                return
+            except Exception as exc:
+                log.warning("Nao consegui ler %s: %s", path, exc)
+
+    def _rename_voice(self) -> None:
+        library, person = self._selected_person()
+        if person is None:
+            return
+        name = simpledialog.askstring("Apolo", t("cfg.voice_library.rename_prompt"),
+                                      initialvalue=person.name, parent=self._win)
+        if name and name.strip() and name.strip() != person.name:
+            library.rename(person.id, name)
+            self._refresh_voices()
+
+    def _delete_voice(self) -> None:
+        library, person = self._selected_person()
+        if person is None:
+            return
+        if messagebox.askyesno("Apolo", t("cfg.voice_library.delete_confirm", name=person.name),
+                               icon="warning", parent=self._win):
+            library.delete(person.id)
+            self._refresh_voices()
+
+    def _delete_all_voices(self) -> None:
+        library = self._library()
+        if not library.people():
+            return
+        if messagebox.askyesno("Apolo", t("cfg.voice_library.delete_all_confirm"),
+                               icon="warning", parent=self._win):
+            library.delete_all()
+            self._refresh_voices()
+
     def _preset_name(self, preset_id: str | None) -> str:
         for p in self._presets:
             if p.id == preset_id:
@@ -870,6 +981,7 @@ class SettingsWindow:
             "default_preset": default_id,
             "on_stop": self._selected(self._on_stop_var, self._on_stop_labels, "ask"),
             "save_audio": bool(self._save_audio_var.get()),
+            "voices_enabled": bool(self._voices_enabled_var.get()),
             "audio_dir": self._audio_dir_var.get().strip() or None,
             "silence_alert_minutes": _number(self._silence_var.get(), 10),
             "max_session_hours": _number(self._max_hours_var.get(), 3),

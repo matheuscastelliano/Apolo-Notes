@@ -166,3 +166,33 @@ def test_people_dialog_splits_names(tk_root):
     entry.insert(0, "Marcos, Fernando; Camila ,")
     next(b for b in _widgets(win, ttk.Button)).invoke()
     assert got == [["Marcos", "Fernando", "Camila"]]
+
+
+def test_voices_tab_toggle_and_library(root, tmp_path, monkeypatch):
+    import numpy as np
+
+    from apolo.voices.library import VoiceLibrary
+
+    lib = VoiceLibrary()  # APPDATA temporario do fixture
+    lib.add_sample("Marcos", np.zeros(16000 * 4, dtype=np.int16))
+    lib.add_sample("Fernando", np.zeros(16000 * 4, dtype=np.int16))
+    sw = SettingsWindow(root, on_saved=lambda: None, on_reload=lambda: None,
+                        on_open_folder=lambda: None)
+    sw.open()
+    try:
+        assert set(sw._voice_tree.get_children()) == {"marcos", "fernando"}
+        monkeypatch.setattr(settings_window.messagebox, "askyesno", lambda *a, **k: True)
+        sw._voice_tree.selection_set("marcos")
+        sw._delete_voice()
+        assert VoiceLibrary().names() == ["Fernando"]
+        monkeypatch.setattr(settings_window.simpledialog, "askstring", lambda *a, **k: "Fer")
+        sw._voice_tree.selection_set("fernando")
+        sw._rename_voice()
+        assert VoiceLibrary().names() == ["Fer"]
+        sw._voices_enabled_var.set(False)
+        sw._save()
+        assert config_module.load_config()["voices_enabled"] is False
+        sw._delete_all_voices()
+        assert VoiceLibrary().names() == [] and sw._voice_tree.get_children() == ()
+    finally:
+        sw._close()
