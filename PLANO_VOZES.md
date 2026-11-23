@@ -101,6 +101,13 @@ Como no plano principal: cada fase termina com algo testável, com um commit por
 - **Identificação com a biblioteca incompleta (só o Fernando): ERROU.** Deu o nome "Fernando" ao Marcos e deixou o Fernando de verdade como voz nova. O modelo **distribui** os nomes que recebe entre as vozes, não confere se a voz é mesmo daquela pessoa. → Regra: sugestão automática só quando **todas** as vozes da reunião têm amostra na biblioteca. Se faltar alguém, todas as sugestões aparecem como "a confirmar" no ▶.
 - **Casamento com a nota:** das 43 falas de "Outros", 29 ficaram com uma voz só, 8 mistas e 6 sem voz (falas curtas que o diarize não marcou). O número é pessimista: o teste usou os parágrafos já juntados da nota, com o fim estimado. No app, os trechos de ~12 s têm início e fim exatos. Fala sem voz herda a voz do vizinho mais próximo.
 
+**Ponta a ponta (23/11, depois da V4):** a Planning 03 inteira pelo app (`python -m apolo --simulate others.wav --speed 4 --people "Marcos, Fernando, Camila"`), com API de verdade e uma biblioteca de teste com amostras do Marcos e do Fernando tiradas da 2ª metade da reunião. Resultado:
+- 4 janelas de ~130 s de fala, separadas em 62 a 73 s cada, já com as 2 vozes como referência a partir da 2ª.
+- Identificação automática certa (Voz A = Fernando, Voz B = Marcos), com a conferência ao contrário batendo.
+- Todas as 36 falas dos "Outros" na nota saíram com nome. Conferindo por amostragem com a referência, estavam certas, inclusive a de 01:39 que a V0 tinha errado com os parágrafos da nota. O resumo já atribuiu as tarefas por nome.
+- Em tempo real, cada janela (~65 s) fica pronta antes da próxima encher (2 min). No Parar, sobram até ~65 s da última janela e ~20 s da identificação.
+- Falta testar numa reunião de verdade: as janelas "Quem está" e "Quem é quem" na tela, ▶ tocando, e alguém que não está na biblioteca.
+
 ### Fase V1: modelo e nota
 `Segment.voice`, mapa de nomes, `speaker_labels`, `reparse`, prompt do resumo e o módulo da biblioteca (`voices.py`), tudo com testes. Ainda sem chamar a API.
 

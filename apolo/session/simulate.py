@@ -8,6 +8,10 @@ app - VAD, chunker, spool, fila de STT, nota ao vivo, resumo com o preset
 padrao - e escreve a nota na pasta configurada. `--speed` acelera a leitura
 do arquivo; os tempos na nota continuam sendo os do audio.
 
+Com `--people "Marcos, Fernando"`, faz tambem o "Quem e quem": separa as
+vozes, mostra as sugestoes da biblioteca e, se todas forem reconhecidas, poe
+os nomes na nota. Sem janela, sugestao nao confirmada fica como "Voz A".
+
 Custa o mesmo que transcrever o WAV (gpt-transcribe, ~US$ 0,0045/min) mais
 um resumo (centavos).
 """
@@ -77,7 +81,9 @@ class WavSource:
         return self._thread is not None and self._thread.is_alive()
 
 
-def cmd_simulate(config: dict, presets: list, path: str, speed: float = 1.0) -> int:
+def cmd_simulate(
+    config: dict, presets: list, path: str, speed: float = 1.0, people: list[str] | None = None
+) -> int:
     from ..providers.openai_provider import OpenAIProvider
 
     try:
@@ -88,6 +94,7 @@ def cmd_simulate(config: dict, presets: list, path: str, speed: float = 1.0) -> 
             text_model=config["text_model"],
             timeout=float(config.get("request_timeout", 60)),
             summary_timeout=float(config.get("summary_timeout", 180)),
+            diarize_model=str(config.get("diarize_model") or "gpt-4o-transcribe-diarize"),
         )
     except ApoloError as exc:
         print(exc)
@@ -121,7 +128,15 @@ def cmd_simulate(config: dict, presets: list, path: str, speed: float = 1.0) -> 
             # Com --speed, o relogio mediu menos que o audio: vale o do WAV.
             session.meta.duration_seconds = len(others) / SAMPLE_RATE
             # Sem janela de parada: resume com o preset padrao.
-            note = session.finalize(FinalizeChoice(preset), provider)
+            choice = FinalizeChoice(preset, participants=list(people or []))
+            review = session.voice_review(choice.participants)
+            if review is not None:
+                for v in review.voices:
+                    print(f"  {v.label}: {v.seconds:.0f}s de fala, sugestao "
+                          f"'{v.suggestion or '-'}' | {v.sample_text}", flush=True)
+                print(f"  automatico: {review.auto}", flush=True)
+                choice.voice_names = review.suggested() if review.auto else {}
+            note = session.finalize(choice, provider)
             if session.summary_error is not None:
                 print(session.summary_error)
     except KeyboardInterrupt:

@@ -435,6 +435,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--speed", type=float, default=1.0, help="com --simulate: le o WAV N vezes mais rapido"
     )
+    parser.add_argument(
+        "--people", metavar="NOMES", default="",
+        help="com --simulate: quem estava (separado por virgula), para o 'Quem e quem'",
+    )
     args = parser.parse_args(argv)
 
     setup_logging(args.debug)
@@ -467,7 +471,8 @@ def main(argv: list[str] | None = None) -> int:
         except ApoloError as exc:
             print(exc)
             return 1
-        return cmd_simulate(config, presets, args.simulate, args.speed)
+        people = [p.strip() for p in args.people.split(",") if p.strip()]
+        return cmd_simulate(config, presets, args.simulate, args.speed, people)
 
     if not claim_single_instance():
         if sys.platform != "win32":
