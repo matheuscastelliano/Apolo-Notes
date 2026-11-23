@@ -47,7 +47,9 @@ from .notes.render import format_duration
 from .notes.reparse import is_placeholder_title, read_note
 from .ui.overlay import Overlay
 from .ui.settings_window import SettingsWindow
+from .ui.people_dialog import ask_people
 from .ui.stop_dialog import ask_finalize as ask_finalize_window
+from .ui.voices_dialog import ask_voices as ask_voices_window
 from .ui.tray import Tray, tray_hosted
 
 log = logging.getLogger("apolo")
@@ -228,12 +230,23 @@ def run_app(open_settings: bool = False) -> int:
     def ask_finalize(preset, duration: float, on_done) -> None:
         """Janela de parada. Chamada de qualquer thread."""
         title = t("stop.ended", duration=format_duration(duration))
+        people = controller.expected_participants
         root.after(0, lambda: ask_finalize_window(
             root, title=title, presets=controller.presets, selected=preset,
-            on_done=on_done, hint=t("stop.hint"),
+            on_done=on_done, hint=t("stop.hint"), initial_participants=people,
         ))
 
-    controller = AppController(on_status, ask_finalize)
+    def ask_voices(review, on_done) -> None:
+        """"Quem e quem". Chamada de qualquer thread."""
+        root.after(0, lambda: ask_voices_window(root, review, on_done))
+
+    def ask_who_is_here() -> None:
+        """"Quem esta na reuniao", pela bandeja, durante a gravacao."""
+        if not controller.can_stop:
+            return
+        ask_people(root, controller.expected_participants, controller.set_expected_participants)
+
+    controller = AppController(on_status, ask_finalize, ask_voices)
     settings = SettingsWindow(
         root,
         on_saved=controller.reload,
@@ -330,6 +343,7 @@ def run_app(open_settings: bool = False) -> int:
         on_resummarize=lambda: root.after(0, resummarize),
         on_settings=lambda: root.after(0, settings.open),
         on_quit=lambda: root.after(0, quit_app),
+        on_people=lambda: root.after(0, ask_who_is_here),
     )
     tray.run_detached()
 

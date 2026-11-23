@@ -377,3 +377,51 @@ def test_voices_disabled_in_config(config, monkeypatch, tmp_path):
     config["voices_enabled"] = True
     s._setup(datetime.now().astimezone())
     assert s.tracker is not None
+
+
+# ------------------------------------------------------ controlador
+
+
+class FakeReviewSession:
+    def __init__(self, review):
+        self.review = review
+
+    def voice_review(self, participants):
+        return self.review
+
+
+def controller(ask_voices=None):
+    from apolo.app import AppController
+
+    return AppController(lambda status: None, None, ask_voices)
+
+
+def test_controller_auto_review_skips_the_window():
+    from apolo.voices.identify import VoiceCandidate, VoiceReview
+
+    clip = np.zeros(10, dtype=np.int16)
+    review = VoiceReview([VoiceCandidate("V1", "Voz A", 9, clip, suggestion="Ana")], auto=True)
+    asked = []
+    c = controller(lambda r, done: asked.append(r))
+    choice = FinalizeChoice(PRESET)
+    c._name_voices(FakeReviewSession(review), choice, ask=True)
+    assert choice.voice_names == {"V1": "Ana"} and asked == []
+
+
+def test_controller_asks_and_waits_for_the_answer():
+    from apolo.voices.identify import VoiceCandidate, VoiceReview
+
+    clip = np.zeros(10, dtype=np.int16)
+    review = VoiceReview([VoiceCandidate("V1", "Voz A", 9, clip, suggestion="Ana")])
+
+    def ask(r, done):
+        threading.Timer(0.05, done, args=({"V1": "Bia"}, False)).start()
+
+    c = controller(ask)
+    choice = FinalizeChoice(PRESET)
+    c._name_voices(FakeReviewSession(review), choice, ask=True)
+    assert choice.voice_names == {"V1": "Bia"} and choice.save_voices is False
+    # Sem ninguem olhando (teto de duracao): nada de nome sem confirmar.
+    unattended = FinalizeChoice(PRESET)
+    c._name_voices(FakeReviewSession(review), unattended, ask=False)
+    assert unattended.voice_names == {}

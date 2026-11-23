@@ -69,6 +69,7 @@ class Tray:
         on_resummarize: Callable[[], None],
         on_settings: Callable[[], None],
         on_quit: Callable[[], None],
+        on_people: Callable[[], None] | None = None,
     ):
         self._controller = controller
         self._status_kind = "idle"
@@ -80,6 +81,7 @@ class Tray:
         self._on_resummarize = on_resummarize
         self._on_settings = on_settings
         self._on_quit = on_quit
+        self._on_people = on_people
         self._thread: threading.Thread | None = None
 
         # O menu inteiro e um callable: pystray o reavalia a cada abertura,
@@ -107,6 +109,8 @@ class Tray:
                 lambda icon=None, item=None: self._controller.toggle_mic_pause(),
                 checked=lambda item: self._controller.mic_paused,
             )
+            if self._on_people is not None:
+                yield pystray.MenuItem(t("tray.people"), lambda icon=None, item=None: self._on_people())
         yield pystray.MenuItem(
             t("tray.start_with"),
             pystray.Menu(self._preset_items),

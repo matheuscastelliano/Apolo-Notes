@@ -45,6 +45,7 @@ from .session.session import DONE, DRAINING, ERROR, PREPARING, READY, RECORDING,
 from .session.session import MeetingSession, SessionStatus
 from .session.spool import Spool, SpoolSession
 from .session.summary import FinalizeChoice, resummarize
+from .voices.identify import VoiceReview
 
 log = logging.getLogger(__name__)
 
@@ -80,12 +81,20 @@ StatusCallback = Callable[[Status], None]
 # (preset marcado, duracao em s, callback com a escolha). Chamado de qualquer
 # thread; a UI abre a janela na main thread e chama o callback uma vez.
 AskFinalize = Callable[[SummaryPreset, float, Callable[[FinalizeChoice], None]], None]
+# "Quem e quem": (vozes, callback(nomes ou None, guardar)). Mesmas regras.
+AskVoices = Callable[[VoiceReview, Callable[[dict | None, bool], None]], None]
 
 
 class AppController:
-    def __init__(self, on_status: StatusCallback, ask_finalize: AskFinalize | None = None):
+    def __init__(
+        self,
+        on_status: StatusCallback,
+        ask_finalize: AskFinalize | None = None,
+        ask_voices: AskVoices | None = None,
+    ):
         self._on_status = on_status
         self._ask_finalize = ask_finalize
+        self._ask_voices = ask_voices
         self._state = State.IDLE
         self._lock = threading.Lock()
         self._session: MeetingSession | None = None
@@ -187,6 +196,17 @@ class AppController:
         session = self._session
         return bool(session and session.mic_paused)
 
+    @property
+    def expected_participants(self) -> list[str]:
+        """"Quem esta na reuniao" da gravacao em andamento."""
+        session = self._session
+        return list(session.expected_participants) if session else []
+
+    def set_expected_participants(self, names: list[str]) -> None:
+        session = self._session
+        if session is not None and self._state is State.RECORDING:
+            session.set_expected_participants(names)
+
     def toggle_mic_pause(self) -> None:
         session = self._session
         if session is not None and self._state is State.RECORDING:
@@ -251,16 +271,49 @@ class AppController:
                 session.drain()
             if session.phase != READY:
                 return  # ERROR: o status ja foi para a UI
-            session.finalize(choice.wait(), session.transcriber)
+            final = choice.wait()
+            self._name_voices(session, final, choice.ask)
+            session.finalize(final, session.transcriber)
         except Exception as exc:
             self._fail(exc, "Falha ao encerrar a sessao")
         finally:
             if self._session is session:
                 self._session = None
 
+    def _name_voices(self, session: MeetingSession, choice: FinalizeChoice, ask: bool) -> None:
+        """"Quem e quem". Reconhecidas pela biblioteca: sem perguntar. Senao,
+        a janela (se ha alguem olhando); sem janela, ficam "Voz A", "Voz B"."""
+        review = session.voice_review(choice.participants)
+        if review is None:
+            return
+        if review.auto:
+            choice.voice_names = review.suggested()
+            log.info("Vozes reconhecidas sozinhas: %s", choice.voice_names)
+            return
+        if not ask or self._ask_voices is None:
+            choice.voice_names = {}
+            return
+        done = threading.Event()
+        answer: dict = {}
+
+        def on_done(names, save) -> None:
+            answer["names"], answer["save"] = names, save
+            done.set()
+
+        self._emit(Status("processing", t("voices.title")))
+        try:
+            self._ask_voices(review, on_done)
+        except Exception:
+            log.exception("Nao consegui abrir o Quem e quem")
+            done.set()
+        done.wait()
+        choice.voice_names = answer.get("names") or {}
+        choice.save_voices = bool(answer.get("save", True)) and answer.get("names") is not None
+
     def _request_choice(self, session: MeetingSession, ask: bool = True) -> "_Choice":
         """Abre a janela de parada (ou nao, com on_stop = auto)."""
-        choice = _Choice(FinalizeChoice(session.preset))
+        choice = _Choice(FinalizeChoice(session.preset, participants=session.expected_participants))
+        choice.ask = ask and self.config.get("on_stop") != "auto"
         if not ask or self.config.get("on_stop") == "auto" or self._ask_finalize is None:
             choice.set(choice.default)
             return choice
@@ -380,9 +433,13 @@ class AppController:
             if s.limit_reached:
                 self.finish(ask=False)
         elif s.phase == DRAINING:
-            self._emit(Status("processing", t("status.draining"), _queue_detail(s)))
+            message = t("status.voices") if s.voices_pending else t("status.draining")
+            self._emit(Status("processing", message, _queue_detail(s)))
         elif s.phase == READY:
-            self._emit(Status("processing", t("status.waiting_choice")))
+            if s.identifying:
+                self._emit(Status("processing", t("status.identifying")))
+            else:
+                self._emit(Status("processing", t("status.waiting_choice")))
         elif s.phase == SUMMARIZING:
             self._emit(Status("processing", t("status.summarizing")))
         elif s.phase == DONE:
@@ -440,6 +497,9 @@ class _Choice:
 
     def __init__(self, default: FinalizeChoice):
         self.default = default
+        # Ha alguem para responder janelas (nao e parada pelo teto, nem
+        # on_stop = auto).
+        self.ask = True
         self._value: FinalizeChoice | None = None
         self._event = threading.Event()
 

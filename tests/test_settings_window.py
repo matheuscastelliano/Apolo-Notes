@@ -97,3 +97,72 @@ def test_changing_language_reopens_the_window_translated(root):
     assert sw._saved_label.cget("text") == i18n.t_in("pt", "cfg.saved")
     assert config_module.load_config()["ui_language"] == "pt"
     assert [p.name for p in config_module.load_presets()][0] == "Geral"
+
+
+# ------------------------------------------------ Quem e quem / Quem esta
+
+
+def _review():
+    import numpy as np
+
+    from apolo.voices.identify import VoiceCandidate, VoiceReview
+
+    clip = np.zeros(16000, dtype=np.int16)
+    return VoiceReview(
+        voices=[VoiceCandidate("V1", "Voz A", 104.0, clip, "eu e o Pedro", "Fernando"),
+                VoiceCandidate("V2", "Voz B", 304.0, clip, "três casos")],
+        names=["Marcos", "Fernando"],
+    )
+
+
+def _widgets(widget, kind):
+    found = []
+    for child in widget.winfo_children():
+        if isinstance(child, kind):
+            found.append(child)
+        found += _widgets(child, kind)
+    return found
+
+
+def test_voices_dialog_confirms_names(tk_root, monkeypatch):
+    from tkinter import ttk
+
+    from apolo.ui import audio_play, voices_dialog
+
+    played = []
+    monkeypatch.setattr(audio_play, "play", lambda pcm: played.append(len(pcm)))
+    i18n.set_language("pt")
+    got = []
+    win = voices_dialog.ask_voices(tk_root, _review(), lambda names, save: got.append((names, save)))
+    combos = _widgets(win, ttk.Combobox)
+    assert [c.get() for c in combos] == ["Fernando", "Não sei"]
+    combos[1].set("Marcos")
+    buttons = _widgets(win, ttk.Button)
+    next(b for b in buttons if b.cget("text") == "▶").invoke()
+    assert played == [16000]
+    next(b for b in buttons if b.cget("text") == "Gerar resumo").invoke()
+    assert got == [({"V1": "Fernando", "V2": "Marcos"}, True)]
+
+
+def test_voices_dialog_closed_names_nobody(tk_root):
+    from apolo.ui import voices_dialog
+
+    got = []
+    win = voices_dialog.ask_voices(tk_root, _review(), lambda names, save: got.append(names))
+    win.event_generate("<Escape>")
+    tk_root.update()
+    assert got == [None]
+
+
+def test_people_dialog_splits_names(tk_root):
+    from tkinter import ttk
+
+    from apolo.ui import people_dialog
+
+    got = []
+    win = people_dialog.ask_people(tk_root, ["Marcos"], got.append)
+    entry = _widgets(win, ttk.Entry)[0]
+    entry.delete(0, "end")
+    entry.insert(0, "Marcos, Fernando; Camila ,")
+    next(b for b in _widgets(win, ttk.Button)).invoke()
+    assert got == [["Marcos", "Fernando", "Camila"]]
