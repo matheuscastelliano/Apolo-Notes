@@ -52,6 +52,9 @@ class NoteMeta:
     # (final) ou "Gravando" (ao vivo).
     title: str = ""
     transcript_block: str = "callout"  # callout | details
+    # Seu nome (config "my_name"). Nao vai para o frontmatter: so troca o
+    # rotulo "Eu" da transcricao.
+    my_name: str = ""
 
 
 # ------------------------------------------------------------------ notas
@@ -154,7 +157,8 @@ def _transcript_block(meta: NoteMeta, segments: Iterable[Entry], live: bool) -> 
         label = t("note.transcript.live")
     else:
         label = t("note.transcript.full", duration=format_duration(meta.duration_seconds))
-    paragraphs = [_paragraph(e) for e in merge_segments(segments)]
+    labels = speaker_labels(meta.participants, meta.my_name)
+    paragraphs = [_paragraph(e, labels) for e in merge_segments(segments)]
     if not paragraphs:
         paragraphs = [f"*{t('note.transcript.empty')}*"]
 
@@ -173,10 +177,36 @@ def _transcript_block(meta: NoteMeta, segments: Iterable[Entry], live: bool) -> 
     return "\n".join(lines)
 
 
-def _paragraph(entry: Entry) -> str:
+def _paragraph(entry: Entry, labels: dict[str, str]) -> str:
     if isinstance(entry, Gap):
         return f"*[{timestamp(entry.start)}–{timestamp(entry.end)}] {_gap_text(entry)}*"
-    return f"**[{timestamp(entry.start)}] {_speaker_label(entry.speaker)}:** {entry.text}"
+    label = labels.get(entry.speaker, labels["others"])
+    return f"**[{timestamp(entry.start)}] {label}:** {entry.text}"
+
+
+def guests(participants: Iterable[str], my_name: str = "") -> list[str]:
+    """Os participantes tirando voce (caso tenha se colocado na lista)."""
+    me = my_name.strip().casefold()
+    names = [p.strip() for p in participants if p and p.strip()]
+    return [p for p in names if not me or p.casefold() != me]
+
+
+def speaker_labels(participants: Iterable[str], my_name: str = "") -> dict[str, str]:
+    """Rotulo de cada canal na transcricao da nota.
+
+    O Apolo so sabe de qual CANAL veio a fala: o microfone e voce, o audio do
+    computador e todo o resto. Entao:
+      - "me" vira o seu nome, se ele estiver nas configuracoes;
+      - "others" vira o nome do participante quando so ha UM (fora voce):
+        numa conversa a dois, o que nao foi voce foi ele. Com dois ou mais
+        nao da para saber quem e quem, e continua "Outros".
+    """
+    me = my_name.strip() or t("speaker.me")
+    others = guests(participants, my_name)
+    return {
+        "me": me,
+        "others": others[0] if len(others) == 1 else t("speaker.others"),
+    }
 
 
 # -------------------------------------------------------------- trechos
@@ -208,13 +238,18 @@ def merge_segments(entries: Iterable[Entry], max_gap: float = MERGE_GAP_SECONDS)
     return merged
 
 
-def format_transcript_for_llm(segments: Iterable[Entry], my_name: str = "") -> str:
+def format_transcript_for_llm(
+    segments: Iterable[Entry],
+    my_name: str = "",
+    participants: Iterable[str] = (),
+) -> str:
     """Transcricao para o resumo, um trecho por linha.
 
     Aqui os trechos NAO sao juntados como na nota: em "Outros" um trecho novo
     muitas vezes e outra pessoa falando, e a quebra ajuda o modelo a inferir
-    os nomes.
+    os nomes. Com um participante so, "Outros" ja vai com o nome dele.
     """
+    others = speaker_labels(participants, my_name)["others"]
     me = t("speaker.me")
     if my_name.strip():
         me = f"{me} ({my_name.strip()})"
@@ -225,13 +260,9 @@ def format_transcript_for_llm(segments: Iterable[Entry], my_name: str = "") -> s
                 f"[{timestamp(entry.start)}–{timestamp(entry.end)}] --- {_gap_text(entry)} ---"
             )
         else:
-            label = me if entry.speaker == "me" else t("speaker.others")
+            label = me if entry.speaker == "me" else others
             lines.append(f"[{timestamp(entry.start)}] {label}: {entry.text}")
     return "\n".join(lines)
-
-
-def _speaker_label(speaker: str) -> str:
-    return t("speaker.me") if speaker == "me" else t("speaker.others")
 
 
 def _gap_text(gap: Gap) -> str:

@@ -81,7 +81,27 @@ def _gap_reason(text: str) -> str:
     return ""
 
 
-def parse_note(text: str) -> ParsedNote:
+def _speaker(label: str, my_name: str, participants: list[str]) -> str:
+    """De volta do rotulo da nota para o canal ("me" ou "others").
+
+    O render escreve "Eu"/"Outros" (em qualquer idioma), o seu nome no lugar
+    de "Eu" e, com um participante so, o nome dele no lugar de "Outros". Um
+    rotulo que nao e nenhum desses nem participante so pode ser voce com o
+    nome que estava nas configuracoes quando a nota foi gravada.
+    """
+    folded = label.casefold()
+    if my_name.strip() and folded == my_name.strip().casefold():
+        return "me"
+    if label in _all("speaker.me"):
+        return "me"
+    if label in _all("speaker.others"):
+        return "others"
+    if folded in {p.strip().casefold() for p in participants}:
+        return "others"
+    return "me"
+
+
+def parse_note(text: str, my_name: str = "") -> ParsedNote:
     front = _frontmatter(text)
     try:
         start = datetime.fromisoformat(front["date"])
@@ -92,7 +112,7 @@ def parse_note(text: str) -> ParsedNote:
     if m:
         duration = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60
 
-    me, others = _all("speaker.me"), _all("speaker.others")
+    participants = _yaml_list(front.get("participants", ""))
     raw: list[tuple[float, str, str]] = []  # (inicio, falante | "gap", texto)
     gaps: list[Gap] = []
     in_transcript = False
@@ -109,10 +129,8 @@ def parse_note(text: str) -> ParsedNote:
         content = line[1:].lstrip() if line.startswith(">") else line.strip()
         seg = _SEGMENT.match(content)
         if seg:
-            label = seg.group(4)
-            speaker = "me" if label in me else "others" if label in others else None
-            if speaker:
-                raw.append((_seconds(*seg.group(1, 2, 3)), speaker, seg.group(5).strip()))
+            speaker = _speaker(seg.group(4), my_name, participants)
+            raw.append((_seconds(*seg.group(1, 2, 3)), speaker, seg.group(5).strip()))
             continue
         gap = _GAP.match(content)
         if gap:
@@ -133,18 +151,18 @@ def parse_note(text: str) -> ParsedNote:
         start=start,
         duration_seconds=duration,
         preset_id=_unquote(front.get("preset", "")),
-        participants=_yaml_list(front.get("participants", "")),
+        participants=participants,
         transcript_block="details" if details else "callout",
     )
     return ParsedNote(meta, entries, extract_user_notes(text), title)
 
 
-def read_note(path: Path) -> ParsedNote:
+def read_note(path: Path, my_name: str = "") -> ParsedNote:
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise NoteError(t("err.note_read"), str(exc)) from exc
-    return parse_note(text)
+    return parse_note(text, my_name)
 
 
 def is_placeholder_title(title: str) -> bool:

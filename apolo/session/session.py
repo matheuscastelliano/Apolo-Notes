@@ -274,6 +274,7 @@ class MeetingSession:
             preset_id=self.preset.id,
             preset_name=self.preset.name,
             transcript_block=self.config.get("transcript_block", "callout"),
+            my_name=str(self.config.get("my_name") or ""),
         )
         self.queue = SttQueue(
             self.transcriber,

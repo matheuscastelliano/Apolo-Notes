@@ -261,6 +261,48 @@ def test_resummarize_failure_leaves_the_note_alone(tmp_path):
     assert path.read_text(encoding="utf-8") == original
 
 
+def one_on_one_note(my_name="Matheus") -> str:
+    meta = NoteMeta(start=START, duration_seconds=2 * 60, preset_id="geral",
+                    preset_name="Geral", participants=["Marcio"], my_name=my_name)
+    entries = [
+        Segment(0, 10, "others", "a gente não tem esse relatório"),
+        Segment(15, 18, "me", "isso não tem hoje"),
+    ]
+    return render.render_final(meta, SummaryResult(title="ANJ", body_markdown="## Resumo\nok"),
+                               entries)
+
+
+def test_parse_note_with_names_in_place_of_me_and_others():
+    text = one_on_one_note()
+    assert "**[00:00:00] Marcio:**" in text and "**[00:00:15] Matheus:**" in text
+    for my_name in ("Matheus", ""):  # sem o nome: o rotulo que nao e participante e voce
+        parsed = parse_note(text, my_name)
+        assert [(e.speaker, e.text) for e in parsed.entries] == [
+            ("others", "a gente não tem esse relatório"),
+            ("me", "isso não tem hoje"),
+        ]
+
+
+def test_parse_note_still_reads_old_me_and_others_labels():
+    text = one_on_one_note(my_name="").replace("**[00:00:00] Marcio:**", "**[00:00:00] Others:**")
+    parsed = parse_note(text, "Matheus")
+    assert [e.speaker for e in parsed.entries] == ["others", "me"]
+
+
+def test_resummarize_old_note_gets_the_names(tmp_path):
+    path = tmp_path / "nota.md"
+    old = one_on_one_note(my_name="")
+    old = old.replace("**[00:00:00] Marcio:**", "**[00:00:00] Others:**")
+    old = old.replace("**[00:00:15] Eu:**", "**[00:00:15] Me:**")
+    path.write_text(old, encoding="utf-8")
+    summarizer = FakeSummarizer()
+    resummarize(path, FinalizeChoice(PRESET), summarizer, "Matheus")
+    text = path.read_text(encoding="utf-8")
+    assert "**[00:00:00] Marcio:** a gente não tem esse relatório" in text
+    assert "**[00:00:15] Matheus:** isso não tem hoje" in text
+    assert "Marcio: a gente" in summarizer.requests[0].transcript
+
+
 # ----------------------------------------------------------- salvar audio
 
 

@@ -49,11 +49,12 @@ def build_summary(
 ) -> tuple[SummaryResult, ApoloError | None]:
     """Resumo pronto para o render_final, e o erro se o modelo falhou."""
     fallback_title = meta.title or t("note.untitled")
+    meta.my_name = my_name  # o rotulo "Eu" da transcricao vira o seu nome
     if not any(isinstance(e, Segment) and e.text.strip() for e in entries):
         body = f"## {t('note.summary')}\n*{t('note.summary.nothing')}*"
         return SummaryResult(title=fallback_title, body_markdown=body), None
     request = SummaryRequest(
-        transcript=format_transcript_for_llm(entries, my_name),
+        transcript=format_transcript_for_llm(entries, my_name, meta.participants),
         user_notes=user_notes,
         participants=list(meta.participants),
         my_name=my_name,
@@ -105,7 +106,7 @@ def resummarize(
     O titulo so muda se o usuario digitou um, ou se a nota ainda tinha um
     titulo provisorio ("Gravando"): renomear quebraria links do Obsidian.
     """
-    parsed = read_note(path)
+    parsed = read_note(path, my_name)
     meta = parsed.meta
     meta.preset_id, meta.preset_name = choice.preset.id, choice.preset.name
     if choice.participants:

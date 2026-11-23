@@ -13,6 +13,7 @@ from apolo.notes.render import (
     note_filename,
     render_final,
     render_live,
+    speaker_labels,
 )
 from apolo.providers.base import Gap, Segment, SummaryResult
 
@@ -245,3 +246,37 @@ def test_note_filename():
     assert note_filename(START, "Gravando") == "2026-10-26 1430 - Gravando.md"
     long_name = note_filename(START, "x" * 300)
     assert len(long_name) == len("2026-10-26 1430 - .md") + 80
+
+
+# ------------------------------------------------- quem falou (rotulos)
+
+
+def test_labels_without_names_stay_me_and_others():
+    assert speaker_labels([], "") == {"me": "Eu", "others": "Outros"}
+
+
+def test_one_participant_takes_the_place_of_others():
+    assert speaker_labels(["Marcio"], "Matheus") == {"me": "Matheus", "others": "Marcio"}
+
+
+def test_two_or_more_participants_keep_others():
+    assert speaker_labels(["João", "Ana"], "")["others"] == "Outros"
+
+
+def test_my_own_name_in_the_participants_does_not_count():
+    labels = speaker_labels(["matheus", " Marcio "], "Matheus")
+    assert labels == {"me": "Matheus", "others": "Marcio"}
+
+
+def test_one_on_one_note_names_both_sides():
+    note = render_final(meta(participants=["Marcio"], my_name="Matheus"), SUMMARY, SEGMENTS)
+    assert "**[00:00:12] Matheus:** Bom dia, pessoal, vamos começar pelo escopo?" in note
+    assert "**[00:00:20] Marcio:** Bom dia! Então, sobre a integração..." in note
+    assert "Outros:" not in note and "Eu:" not in note
+    assert "my_name" not in note  # o seu nome nao vai para o frontmatter
+
+
+def test_llm_transcript_names_the_single_participant():
+    text = format_transcript_for_llm(SEGMENTS, "Matheus", ["Marcio"])
+    assert "[00:00:12] Eu (Matheus): Bom dia, pessoal," in text
+    assert "[00:00:20] Marcio: Bom dia!" in text
