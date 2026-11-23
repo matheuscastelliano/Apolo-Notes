@@ -54,7 +54,9 @@ def build_summary(
         body = f"## {t('note.summary')}\n*{t('note.summary.nothing')}*"
         return SummaryResult(title=fallback_title, body_markdown=body), None
     request = SummaryRequest(
-        transcript=format_transcript_for_llm(entries, my_name, meta.participants),
+        transcript=format_transcript_for_llm(
+            entries, my_name, meta.participants, meta.voice_names
+        ),
         user_notes=user_notes,
         participants=list(meta.participants),
         my_name=my_name,
@@ -62,6 +64,7 @@ def build_summary(
         duration_seconds=meta.duration_seconds,
         system_prompt=preset.system_prompt,
         model=preset.text_model,
+        has_voices=any(isinstance(e, Segment) and e.voice for e in entries),
     )
     try:
         return summarize_with_retry(summarizer, request), None

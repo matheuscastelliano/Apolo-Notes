@@ -20,6 +20,7 @@ from .. import i18n
 from ..errors import NoteError
 from ..i18n import t
 from ..providers.base import Gap, Segment
+from ..voices.timeline import voice_id
 from .render import Entry, NoteMeta, extract_user_notes
 
 _SEGMENT = re.compile(r"^\*\*\[(\d+):(\d{2}):(\d{2})\] (.+?):\*\* ?(.*)$")
@@ -81,13 +82,36 @@ def _gap_reason(text: str) -> str:
     return ""
 
 
+def _voice_patterns() -> list[re.Pattern]:
+    """'Voz {letter}' em cada idioma -> regex que pega a letra."""
+    out = []
+    for template in _all("speaker.voice"):
+        head, _, tail = template.partition("{letter}")
+        out.append(re.compile(f"^{re.escape(head)}([A-Z]+){re.escape(tail)}$"))
+    return out
+
+
+def _voice(label: str, speaker: str) -> tuple[str | None, str]:
+    """(voz, nome) de uma fala dos "Outros". Nome vazio = voz sem nome."""
+    if speaker != "others" or label in _all("speaker.others"):
+        return None, ""
+    for pattern in _voice_patterns():
+        m = pattern.match(label)
+        if m:
+            return voice_id(m.group(1)), ""
+    # Um nome: vira uma "voz" com esse nome, para o render escrever igual.
+    return f"N:{label}", label
+
+
 def _speaker(label: str, my_name: str, participants: list[str]) -> str:
     """De volta do rotulo da nota para o canal ("me" ou "others").
 
     O render escreve "Eu"/"Outros" (em qualquer idioma), o seu nome no lugar
     de "Eu" e, com um participante so, o nome dele no lugar de "Outros". Um
     rotulo que nao e nenhum desses nem participante so pode ser voce com o
-    nome que estava nas configuracoes quando a nota foi gravada.
+    nome que estava nas configuracoes quando a nota foi gravada. Com a
+    separacao de vozes, aparecem "Voz A" e os nomes confirmados - que o
+    Apolo sempre poe na lista de participantes.
     """
     folded = label.casefold()
     if my_name.strip() and folded == my_name.strip().casefold():
@@ -95,6 +119,8 @@ def _speaker(label: str, my_name: str, participants: list[str]) -> str:
     if label in _all("speaker.me"):
         return "me"
     if label in _all("speaker.others"):
+        return "others"
+    if any(p.match(label) for p in _voice_patterns()):
         return "others"
     if folded in {p.strip().casefold() for p in participants}:
         return "others"
@@ -113,7 +139,8 @@ def parse_note(text: str, my_name: str = "") -> ParsedNote:
         duration = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60
 
     participants = _yaml_list(front.get("participants", ""))
-    raw: list[tuple[float, str, str]] = []  # (inicio, falante | "gap", texto)
+    raw: list[tuple[float, str, str, str | None]] = []  # (inicio, falante, texto, voz)
+    voice_names: dict[str, str] = {}
     gaps: list[Gap] = []
     in_transcript = False
     transcript_headers = {f"## {h}" for h in _all("note.transcript")}
@@ -129,8 +156,12 @@ def parse_note(text: str, my_name: str = "") -> ParsedNote:
         content = line[1:].lstrip() if line.startswith(">") else line.strip()
         seg = _SEGMENT.match(content)
         if seg:
-            speaker = _speaker(seg.group(4), my_name, participants)
-            raw.append((_seconds(*seg.group(1, 2, 3)), speaker, seg.group(5).strip()))
+            label = seg.group(4)
+            speaker = _speaker(label, my_name, participants)
+            voice, name = _voice(label, speaker)
+            if voice and name:
+                voice_names[voice] = name
+            raw.append((_seconds(*seg.group(1, 2, 3)), speaker, seg.group(5).strip(), voice))
             continue
         gap = _GAP.match(content)
         if gap:
@@ -138,11 +169,11 @@ def parse_note(text: str, my_name: str = "") -> ParsedNote:
                             _gap_reason(gap.group(7))))
 
     entries: list[Entry] = []
-    starts = sorted([s for s, _, _ in raw] + [g.start for g in gaps])
-    for start_s, speaker, body in raw:
+    starts = sorted([s for s, *_ in raw] + [g.start for g in gaps])
+    for start_s, speaker, body, voice in raw:
         # O fim nao esta na nota: vai ate o proximo trecho (ou ate o inicio).
         later = [s for s in starts if s > start_s]
-        entries.append(Segment(start_s, later[0] if later else start_s, speaker, body))
+        entries.append(Segment(start_s, later[0] if later else start_s, speaker, body, voice))
     entries += gaps
     entries.sort(key=lambda e: e.start)
 
@@ -153,6 +184,8 @@ def parse_note(text: str, my_name: str = "") -> ParsedNote:
         preset_id=_unquote(front.get("preset", "")),
         participants=participants,
         transcript_block="details" if details else "callout",
+        voice_names=voice_names,
+        my_name=my_name,
     )
     return ParsedNote(meta, entries, extract_user_notes(text), title)
 

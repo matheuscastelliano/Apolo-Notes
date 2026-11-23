@@ -298,6 +298,9 @@ def summary_user_message(request: SummaryRequest) -> str:
         )
     if request.my_name.strip():
         lines.append(t("summary.ctx.me", me=t("speaker.me"), name=request.my_name.strip()))
+    if request.has_voices:
+        lines.append(t("summary.ctx.voices", others=t("speaker.others"),
+                       voice=t("speaker.voice", letter="A")))
 
     parts = ["\n".join(lines)] if lines else []
     notes = request.user_notes.strip()

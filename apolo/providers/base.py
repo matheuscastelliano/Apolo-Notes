@@ -27,6 +27,18 @@ class Segment:
     end: float
     speaker: Speaker
     text: str
+    # Qual voz dos "Outros" falou ("V1", "V2"...), quando a separacao de
+    # vozes estava ligada e achou alguem. None = nao se sabe.
+    voice: str | None = None
+
+
+@dataclass(frozen=True)
+class DiarSegment:
+    """Um pedaco de fala de uma voz so, devolvido pela separacao de vozes."""
+
+    start: float
+    end: float
+    speaker: str
 
 
 @dataclass(frozen=True)
@@ -57,6 +69,8 @@ class SummaryRequest:
     system_prompt: str = ""
     # None = o text_model padrao do provider.
     model: str | None = None
+    # As falas dos "Outros" ja vem com o nome (ou "Voz A") de quem falou.
+    has_voices: bool = False
 
 
 @dataclass
@@ -95,3 +109,19 @@ class Transcriber(Protocol):
 
 class Summarizer(Protocol):
     def summarize(self, request: SummaryRequest) -> SummaryResult: ...
+
+
+class Diarizer(Protocol):
+    def diarize(
+        self,
+        wav: bytes,
+        *,
+        references: dict[str, bytes] | None = None,
+        languages: list[str] | None = None,
+    ) -> list[DiarSegment]:
+        """Quem falou quando, no audio. Tempos em segundos desde o inicio dele.
+
+        `references` = nome -> WAV curto (2 a 10 s) de uma voz conhecida. As
+        falas dessas vozes voltam com esse nome; as outras, com letras.
+        """
+        ...
