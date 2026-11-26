@@ -58,7 +58,10 @@ já tiver uma salva, o Apolo usa a mesma até você configurar outra.
    com cada voz que o Apolo separou: ▶ para ouvir, e você escolhe o nome (ou
    digita um novo). A nota sai com `Marcos:`, `Fernando:` no lugar de
    `Outros:`. Quem você nomeou é reconhecido sozinho nas próximas reuniões; se
-   todo mundo for reconhecido, a janela nem aparece.
+   todo mundo for reconhecido, a janela nem aparece. **Ouça antes de aceitar
+   uma sugestão:** só vira amostra a voz que você ouviu (▶) ou cujo nome você
+   escolheu; sugestão aceita sem ouvir vale só para a nota. Voz que falou
+   pouco (menos de 3 s) fica de fora, e a janela avisa qual foi.
 
 Use fone: com caixa de som, o microfone também capta os outros e a fala deles
 aparece como "Eu".
@@ -71,14 +74,31 @@ Sobre os nomes na transcrição:
 - **Três ou mais:** o áudio do computador é separado em vozes em blocos de
   2 minutos durante a reunião (`gpt-4o-transcribe-diarize`, cobrado por minuto
   como a transcrição). Voz que você não nomear sai como "Voz A", "Voz B".
-- As amostras de voz (3 a 8 s por pessoa) ficam só neste computador, em
-  Configurações ▸ **Vozes**, onde dá para ouvir, renomear e apagar. A mesma aba
-  desliga a separação de vozes.
+- As amostras de voz (3 a 8 s cada, até 3 por pessoa) ficam só neste
+  computador, em Configurações ▸ **Vozes**, onde dá para ouvir, renomear e
+  apagar. Abra um nome para ouvir cada amostra e apagar só a que não for
+  daquela pessoa. A mesma aba desliga a separação de vozes.
+
+Com as notas dentro de um vault do Obsidian (Configurações ▸ Notas ▸
+**Organizar a nota no vault**, ligado por padrão):
+
+- `tags` recebe só tags que já existem no vault, com a grafia dele (`SmartOSS`);
+  as palavras-chave livres e `meeting`/tipo de resumo vão para `apolo_tags`.
+- O resumo escolhe o projeto entre as subpastas da **Pasta dos projetos** (vazio
+  = a pasta com "projeto" no nome, ex.: `02 PROJETOS 🏆`), com a ajuda das tags e
+  das pessoas que já aparecem nas notas de cada projeto. A nota ganha
+  `projects: ["[[Vertis]]"]` e vai para `<projeto>/Apolo Notes`.
+- As tags do vault são lidas durante a gravação e guardadas em
+  `%APPDATA%\Apolo\vault_tags.json` (na 1ª leitura, com o disco frio, pode
+  levar quase 1 minuto).
 
 Se algo der errado no meio:
 
 - **Internet caiu:** o áudio espera no disco (até 2 h) e é transcrito quando a
   conexão volta. O indicador mostra "sem conexão".
+- **Créditos da OpenAI acabaram:** o indicador mostra "OpenAI sem crédito". O
+  áudio espera no disco; recarregue em platform.openai.com e a transcrição
+  continua sozinha (tenta de 2 em 2 min), sem fechar o app.
 - **App fechou ou travou:** na próxima vez que abrir, ele oferece terminar a
   gravação que ficou pela metade.
 - **O resumo falhou, ou você quer outro tipo:** bandeja ▸ **Resumir de novo...**
@@ -95,6 +115,7 @@ As duas são configuráveis em Notas.
 | `%APPDATA%\Apolo\presets.json` | Os tipos de resumo (aba Tipos de resumo) |
 | `%APPDATA%\Apolo\apolo.log` | Log |
 | `%APPDATA%\Apolo\voices\` | Amostras das vozes que você nomeou (aba Vozes) |
+| `%APPDATA%\Apolo\vault_tags.json` | Tags e pistas dos projetos lidas do vault |
 | `%LOCALAPPDATA%\Apolo\spool\` | Áudio temporário, apagado quando a nota fica pronta |
 | `Documentos\Apolo\` | As notas (padrão; configurável) |
 

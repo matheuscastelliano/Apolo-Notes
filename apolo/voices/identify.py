@@ -54,6 +54,9 @@ class VoiceReview:
     auto: bool = False
     # Opcoes do campo de nome: os participantes e quem esta na biblioteca.
     names: list[str] = field(default_factory=list)
+    # Vozes que ficaram de fora por falar pouco: (rotulo, segundos). A janela
+    # mostra, para a letra que pulou ("cade a Voz B?") nao confundir.
+    skipped: list[tuple[str, float]] = field(default_factory=list)
 
     def suggested(self) -> dict[str, str]:
         return {v.id: v.suggestion for v in self.voices if v.suggestion}
@@ -83,6 +86,12 @@ def _sample_text(entries: list, info) -> str:
         return ""
     text = " ".join(pick.text.split())
     return text if len(text) <= 90 else text[:87].rstrip() + "..."
+
+
+def short_voices(tracker: VoiceTracker) -> list[tuple[str, float]]:
+    """As vozes que `candidates` deixa de fora, com quanto falaram."""
+    return [(voice_label(info.id), round(info.seconds, 1)) for info in tracker.voice_list()
+            if info.seconds < MIN_VOICE_SECONDS or info.clip_seconds <= 0]
 
 
 def build_review(
@@ -134,7 +143,7 @@ def build_review(
             auto = False
     log.info("Vozes: %d para validar, sugestoes %s, automatico=%s",
              len(voices), {v.id: v.suggestion for v in voices}, auto)
-    return VoiceReview(voices, auto=auto, names=names)
+    return VoiceReview(voices, auto=auto, names=names, skipped=short_voices(tracker))
 
 
 def _confirm(voices: list[VoiceCandidate], refs: dict[str, bytes], diarizer, languages) -> bool:

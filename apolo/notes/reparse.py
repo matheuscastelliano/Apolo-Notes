@@ -51,21 +51,33 @@ def _unquote(value: str) -> str:
     return value
 
 
-def _frontmatter(text: str) -> dict[str, str]:
+def _frontmatter(text: str) -> dict[str, str | list[str]]:
+    """Chave: valor; lista em bloco ("  - Marcos") vira list. O Obsidian
+    reescreve as listas nesse formato quando voce mexe nas propriedades."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}
-    data = {}
+    data: dict[str, str | list[str]] = {}
+    current: str | None = None
     for line in lines[1:]:
         if line.strip() == "---":
             break
+        item = re.match(r"^\s+-\s*(.*)$", line)
+        if item and current is not None:
+            listed = data.get(current)
+            data[current] = [*(listed if isinstance(listed, list) else []),
+                             _unquote(item.group(1))]
+            continue
         key, sep, value = line.partition(":")
-        if sep:
-            data[key.strip()] = value.strip()
+        if sep and not line.startswith((" ", "\t")):
+            current = key.strip()
+            data[current] = value.strip()
     return data
 
 
-def _yaml_list(value: str) -> list[str]:
+def _yaml_list(value: str | list[str]) -> list[str]:
+    if isinstance(value, list):
+        return [v for v in value if v]
     value = value.strip()
     if not (value.startswith("[") and value.endswith("]")):
         return [value] if value else []
@@ -130,11 +142,11 @@ def _speaker(label: str, my_name: str, participants: list[str]) -> str:
 def parse_note(text: str, my_name: str = "") -> ParsedNote:
     front = _frontmatter(text)
     try:
-        start = datetime.fromisoformat(front["date"])
+        start = datetime.fromisoformat(str(front["date"]))
     except (KeyError, ValueError) as exc:
         raise NoteError(t("err.note_not_apolo")) from exc
     duration = 0.0
-    m = _DURATION.match(front.get("duration", ""))
+    m = _DURATION.match(str(front.get("duration", "")))
     if m:
         duration = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60
 
@@ -177,11 +189,11 @@ def parse_note(text: str, my_name: str = "") -> ParsedNote:
     entries += gaps
     entries.sort(key=lambda e: e.start)
 
-    title = _unquote(front.get("title", ""))
+    title = _unquote(str(front.get("title", "")))
     meta = NoteMeta(
         start=start,
         duration_seconds=duration,
-        preset_id=_unquote(front.get("preset", "")),
+        preset_id=_unquote(str(front.get("preset", ""))),
         participants=participants,
         transcript_block="details" if details else "callout",
         voice_names=voice_names,

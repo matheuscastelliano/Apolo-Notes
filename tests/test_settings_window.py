@@ -141,7 +141,22 @@ def test_voices_dialog_confirms_names(tk_root, monkeypatch):
     next(b for b in buttons if b.cget("text") == "▶").invoke()
     assert played == [16000]
     next(b for b in buttons if b.cget("text") == "Gerar resumo").invoke()
-    assert got == [({"V1": "Fernando", "V2": "Marcos"}, True)]
+    # V1 foi ouvida, V2 ganhou nome na mao: as duas podem virar amostra.
+    assert got == [({"V1": "Fernando", "V2": "Marcos"}, {"V1", "V2"})]
+
+
+def test_voices_dialog_does_not_learn_unheard_suggestion(tk_root):
+    from tkinter import ttk
+
+    from apolo.ui import voices_dialog
+
+    i18n.set_language("pt")
+    got = []
+    win = voices_dialog.ask_voices(tk_root, _review(), lambda names, save: got.append((names, save)))
+    _widgets(win, ttk.Combobox)[1].set("Marcos")
+    next(b for b in _widgets(win, ttk.Button) if b.cget("text") == "Gerar resumo").invoke()
+    # Fernando era sugestao e ninguem ouviu: vale na nota, nao vira amostra.
+    assert got == [({"V1": "Fernando", "V2": "Marcos"}, {"V2"})]
 
 
 def test_voices_dialog_closed_names_nobody(tk_root):
@@ -196,3 +211,18 @@ def test_voices_tab_toggle_and_library(root, tmp_path, monkeypatch):
         assert VoiceLibrary().names() == [] and sw._voice_tree.get_children() == ()
     finally:
         sw._close()
+
+
+def test_voices_dialog_explains_the_letter_that_was_left_out(tk_root):
+    """26/11: o Quem é quem mostrou A, C e D, e a Voz B parecia ter sumido."""
+    from tkinter import ttk
+
+    from apolo.ui import voices_dialog
+
+    i18n.set_language("pt")
+    review = _review()
+    review.skipped = [("Voz C", 2.0)]
+    win = voices_dialog.ask_voices(tk_root, review, lambda names, save: None)
+    texts = [w.cget("text") for w in _widgets(win, ttk.Label)]
+    assert any("Voz C (2 s)" in text and "falar pouco" in text for text in texts)
+    win.destroy()

@@ -48,6 +48,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "my_name": "",
     # Onde as notas .md sao escritas. Pode ser o vault do Obsidian.
     "notes_dir": "~/Documents/Apolo",
+    # Com as notas num vault do Obsidian (notes/vault.py): `tags` so com tags
+    # que ja existem no vault, e a nota vai para "<projeto>/Apolo Notes".
+    "organize_in_vault": True,
+    # Pasta com uma subpasta por projeto. Vazio = procura no vault uma pasta
+    # com "projeto"/"project" no nome (ex.: "02 PROJETOS 🏆").
+    "projects_dir": "",
     # None = %LOCALAPPDATA%\Apolo\spool. Audio temporario, apagado no fim.
     "spool_dir": None,
     # Guardar o audio da reuniao (FLAC por canal). Desligado por padrao.

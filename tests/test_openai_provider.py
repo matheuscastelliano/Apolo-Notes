@@ -13,6 +13,7 @@ from apolo.errors import (
     CredentialsError,
     OfflineError,
     ProviderTimeoutError,
+    QuotaError,
     RateLimitedError,
     ServerError,
     SummaryError,
@@ -20,7 +21,11 @@ from apolo.errors import (
     TransientError,
 )
 from apolo.providers.base import SummaryRequest
-from apolo.providers.openai_provider import OpenAIProvider, parse_markdown_result
+from apolo.providers.openai_provider import (
+    QUOTA_RETRY_SECONDS,
+    OpenAIProvider,
+    parse_markdown_result,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -36,9 +41,9 @@ def pt_ui():
 _REQUEST = httpx.Request("POST", "https://api.openai.com/v1/test")
 
 
-def status_error(cls, status, message="erro", headers=None, code=None):
+def status_error(cls, status, message="erro", headers=None, code=None, type=None):
     response = httpx.Response(status, request=_REQUEST, headers=headers or {})
-    body = {"message": message, "code": code} if code else None
+    body = {"message": message, "code": code, "type": type} if (code or type) else None
     return cls(message, response=response, body=body)
 
 
@@ -164,10 +169,19 @@ def test_rate_limit_carries_retry_after():
     assert info.value.message == "Limite de uso da OpenAI atingido. Tentando de novo em instantes."
 
 
-def test_insufficient_quota_is_not_retryable():
-    exc = status_error(openai.RateLimitError, 429, code="insufficient_quota")
-    with pytest.raises(CredentialsError) as info:
+@pytest.mark.parametrize(
+    "code, type_",
+    [
+        ("insufficient_quota", None),  # formato antigo
+        ("credit_balance_exhausted", "insufficient_quota"),  # formato de 11/2026
+    ],
+)
+def test_out_of_credit_waits_slowly_and_says_so(code, type_):
+    exc = status_error(openai.RateLimitError, 429, code=code, type=type_)
+    with pytest.raises(QuotaError) as info:
         make_provider(FakeEndpoint(exc)).transcribe(b"x")
+    assert isinstance(info.value, TransientError)  # o audio espera no spool
+    assert info.value.retry_after == QUOTA_RETRY_SECONDS
     assert "crédito" in info.value.message
 
 
@@ -187,6 +201,8 @@ JSON_NOTE = json.dumps(
     {
         "title": "Deploy no staging",
         "tags": ["Deploy", "#staging", "deploy"],
+        "keywords": ["pipeline", "#ci"],
+        "projects": ["Vertis"],
         "body_markdown": "## Resumo\nVai para staging amanhã.",
     }
 )
@@ -196,7 +212,10 @@ def test_summarize_structured_output():
     chat = FakeEndpoint(chat_response(JSON_NOTE))
     result = make_provider(chat=chat).summarize(REQUEST)
     assert result.title == "Deploy no staging"
-    assert result.tags == ["deploy", "staging"]
+    # A grafia fica (tag do vault pode ser "SmartOSS"); o render normaliza
+    # quando nao ha vault.
+    assert result.tags == ["Deploy", "staging"]
+    assert result.keywords == ["pipeline", "ci"] and result.projects == ["Vertis"]
     assert result.body_markdown == "## Resumo\nVai para staging amanhã."
 
     call = chat.calls[0]
@@ -322,3 +341,14 @@ def test_diarize_without_references_and_errors_are_wrapped():
     bad = make_provider(FakeEndpoint(status_error(openai.BadRequestError, 400)))
     with pytest.raises(DiarizationError):
         bad.diarize(b"RIFF")
+
+
+def test_summary_message_lists_projects_with_hints_and_vault_tags():
+    from apolo.providers.openai_provider import summary_user_message
+
+    request = SummaryRequest(transcript="x", projects=["SoulTech", "Vertis"],
+                             known_tags=["SmartOSS", "vertis"],
+                             project_hints={"Vertis": "tags: vertis; pessoas: Marcos"})
+    text = summary_user_message(request)
+    assert "Projetos: SoulTech; Vertis (tags: vertis; pessoas: Marcos)" in text
+    assert "Tags existentes: SmartOSS, vertis" in text

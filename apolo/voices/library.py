@@ -177,6 +177,20 @@ class VoiceLibrary:
                 person.name = new_name
             self._save()
 
+    def delete_sample(self, person_id: str, sample: str) -> None:
+        """Apaga uma amostra so (a de alguem que ganhou o nome errado).
+        Sem amostra nenhuma, a pessoa sai da biblioteca."""
+        with self._lock:
+            person = self._people.get(person_id)
+            if person is None or sample not in person.samples:
+                return
+            (self.root / person.id / sample).unlink(missing_ok=True)
+            person.samples.remove(sample)
+            if not person.samples:
+                del self._people[person_id]
+                shutil.rmtree(self.root / person_id, ignore_errors=True)
+            self._save()
+
     def delete(self, person_id: str) -> None:
         with self._lock:
             self._people.pop(person_id, None)

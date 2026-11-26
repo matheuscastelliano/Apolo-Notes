@@ -119,6 +119,7 @@ _TRANSLATIONS["en"] = {
     "status.pending": "{n} chunk(s) waiting ({seconds}s of audio)",
     "status.offline": "no connection - the audio waits on disk",
     "status.retrying": "OpenAI unstable, retrying",
+    "status.no_credit": "OpenAI out of credit - top up and it resumes",
     "status.channel_down.mic": "Your microphone is not being recorded.",
     "status.channel_down.sys": "The system audio (others) is not being recorded.",
     "status.audio_kept": "The audio not yet transcribed stays on disk.",
@@ -141,7 +142,8 @@ _TRANSLATIONS["en"] = {
     "voices.unknown": "Don't know",
     "voices.speech": "{time} of speech",
     "voices.suggested": "suggested - check with ▶",
-    "voices.save": "Remember these voices next time (kept only on this computer)",
+    "voices.save": "Remember the voices you listened to or named (kept only on this computer)",
+    "voices.skipped": "Left out for speaking too little: {voices}. Their lines keep the letter in the note.",
     "people.title": "Who is in the meeting",
     "people.hint": "Optional. Names separated by commas. It helps put names on the voices; with one person only, the voices are not separated.",
     "people.save": "Save",
@@ -175,7 +177,7 @@ _TRANSLATIONS["en"] = {
     "cfg.voices_enabled": "Tell the voices on the computer audio apart",
     "cfg.voices_enabled.hint": "The computer-audio voices are separated in 2-minute blocks during the meeting (OpenAI gpt-4o-transcribe-diarize, charged per minute, like the transcript). At the end you say who each voice is, and the note comes out with the names. One-on-ones do not need it: with one person, her name is used.",
     "cfg.section.voice_library": "Saved voices",
-    "cfg.voice_library.hint": "Short samples (3 to 8 s) of the people you named, used to recognise them in the next meetings. They stay on this computer and only leave as a reference in the voice-separation calls. A voice sample is personal data: delete it whenever you want.",
+    "cfg.voice_library.hint": "Short samples (3 to 8 s) of the people you named, used to recognise them in the next meetings. They stay on this computer and only leave as a reference in the voice-separation calls. Open a name to listen to each sample and delete one that is not that person. A voice sample is personal data: delete it whenever you want.",
     "cfg.voice_library.name": "Name",
     "cfg.voice_library.samples": "Samples",
     "cfg.voice_library.updated": "Updated",
@@ -186,6 +188,7 @@ _TRANSLATIONS["en"] = {
     "cfg.voice_library.delete_all": "Delete all",
     "cfg.voice_library.delete_confirm": "Delete the voice samples of {name}? This cannot be undone.",
     "cfg.voice_library.delete_all_confirm": "Delete ALL saved voice samples? This cannot be undone.",
+    "cfg.voice_library.delete_sample_confirm": "Delete the sample of {name} from {sample}? This cannot be undone.",
     "cfg.clear": "Clear",
     "cfg.system_default": "(system default)",
     "cfg.section.hotkeys": "Shortcuts",
@@ -322,6 +325,10 @@ _TRANSLATIONS["en"] = {
     "cfg.my_name.hint": "Who 'Me' is in the transcript, so action items come out with your name.",
     "cfg.notes_dir": "Notes folder",
     "cfg.notes_dir.hint": "Where meeting notes (.md) are written. It can be an Obsidian vault folder.",
+    "cfg.organize_in_vault": "Organise the note in the Obsidian vault",
+    "cfg.organize_in_vault.hint": "With the notes inside a vault: 'tags' only gets tags that already exist there (the free keywords go to 'apolo_tags'), and the note moves to '<project>/Apolo Notes'.",
+    "cfg.projects_dir": "Projects folder",
+    "cfg.projects_dir.hint": "One subfolder per project. Empty = a folder with 'project' in its name inside the vault.",
     "cfg.ui_language": "Interface language",
     "cfg.ui_language.hint": "Changes menus, settings and messages. 'Automatic' follows the system.",
     "cfg.overlay": "On-screen indicator",
@@ -432,7 +439,7 @@ _TRANSLATIONS["en"] = {
     "cli.simulate.done": "Done. Note: {path}",
     # -- provider (fases 3 e 4)
     "err.quota": "Your OpenAI account is out of credit.",
-    "err.quota.detail": "Check billing at platform.openai.com. Pending audio stays on disk.",
+    "err.quota.detail": "Top up at platform.openai.com. Pending audio stays on disk and resumes by itself.",
     "err.transcription_failed": "Transcription failed.",
     "err.diarize_failed": "Could not tell the voices apart.",
     "err.summary_failed": "Could not generate the summary.",
@@ -484,7 +491,15 @@ _TRANSLATIONS["en"] = {
         "Answer with a JSON object containing:\n"
         "- title: short, specific title for the meeting (up to ~60 "
         "characters), without the date.\n"
-        "- tags: 1 to 5 lowercase tags, no spaces (use hyphens), no '#'.\n"
+        "- tags: up to 5 tags. If the message lists 'Existing tags', use ONLY "
+        "tags from that list, spelled exactly as there (none fits = empty "
+        "list). Without that list, 1 to 5 lowercase tags, no spaces (use "
+        "hyphens), no '#'.\n"
+        "- keywords: 1 to 5 lowercase keywords about the subject, no spaces "
+        "(use hyphens), no '#'. Free choice.\n"
+        "- projects: the projects this meeting is about, ONLY from the "
+        "'Projects' list in the message, spelled exactly as there, the main "
+        "one first. Empty list if none fits or there is no list.\n"
         "- body_markdown: the body of the note in Markdown, with the sections "
         "requested above, starting at the first '##'. No title, no "
         "frontmatter."
@@ -499,6 +514,8 @@ _TRANSLATIONS["en"] = {
     "summary.ctx.participants": "Participants: {names}",
     "summary.ctx.me": "'{me}' in the transcript: {name}",
     "summary.ctx.voices": "The computer-audio lines already say who spoke: a name when the voice was recognised, '{voice}', 'B'... for different people who were not identified, and '{others}' when it is unknown.",
+    "summary.ctx.projects": "Projects: {names}",
+    "summary.ctx.tags": "Existing tags: {tags}",
     "summary.ctx.notes": "User's notes",
     "summary.ctx.no_notes": "(none)",
     "summary.ctx.transcript": "Transcript",
@@ -526,6 +543,7 @@ _TRANSLATIONS["pt"] = {
     "status.pending": "{n} trecho(s) na fila ({seconds}s de áudio)",
     "status.offline": "sem conexão - o áudio espera no disco",
     "status.retrying": "OpenAI instável, tentando de novo",
+    "status.no_credit": "OpenAI sem crédito - recarregue e ele continua",
     "status.channel_down.mic": "Seu microfone não está sendo gravado.",
     "status.channel_down.sys": "O áudio do sistema (outros) não está sendo gravado.",
     "status.audio_kept": "O áudio ainda não transcrito continua no disco.",
@@ -548,7 +566,8 @@ _TRANSLATIONS["pt"] = {
     "voices.unknown": "Não sei",
     "voices.speech": "{time} de fala",
     "voices.suggested": "sugestão - confira no ▶",
-    "voices.save": "Guardar as vozes para reconhecer da próxima vez (só neste computador)",
+    "voices.save": "Guardar as vozes que você ouviu ou nomeou, para reconhecer da próxima vez (só neste computador)",
+    "voices.skipped": "Ficou de fora por falar pouco: {voices}. As falas dela ficam com a letra na nota.",
     "people.title": "Quem está na reunião",
     "people.hint": "Opcional. Nomes separados por vírgula. Ajuda a pôr nome nas vozes; com uma pessoa só, as vozes nem são separadas.",
     "people.save": "Salvar",
@@ -582,7 +601,7 @@ _TRANSLATIONS["pt"] = {
     "cfg.voices_enabled": "Separar as vozes do áudio do computador",
     "cfg.voices_enabled.hint": "As vozes do áudio do computador são separadas em blocos de 2 minutos durante a reunião (gpt-4o-transcribe-diarize da OpenAI, cobrado por minuto, como a transcrição). No fim você diz quem é cada voz e a nota sai com os nomes. Conversa a dois não precisa: com uma pessoa só, vale o nome dela.",
     "cfg.section.voice_library": "Vozes guardadas",
-    "cfg.voice_library.hint": "Amostras curtas (3 a 8 s) de quem você identificou, usadas para reconhecer nas próximas reuniões. Ficam só neste computador e só saem como referência nas chamadas que separam as vozes. Amostra de voz é dado pessoal: apague quando quiser.",
+    "cfg.voice_library.hint": "Amostras curtas (3 a 8 s) de quem você identificou, usadas para reconhecer nas próximas reuniões. Ficam só neste computador e só saem como referência nas chamadas que separam as vozes. Abra um nome para ouvir cada amostra e apagar a que não for daquela pessoa. Amostra de voz é dado pessoal: apague quando quiser.",
     "cfg.voice_library.name": "Nome",
     "cfg.voice_library.samples": "Amostras",
     "cfg.voice_library.updated": "Atualizado",
@@ -593,6 +612,7 @@ _TRANSLATIONS["pt"] = {
     "cfg.voice_library.delete_all": "Apagar tudo",
     "cfg.voice_library.delete_confirm": "Apagar as amostras de voz de {name}? Não dá para desfazer.",
     "cfg.voice_library.delete_all_confirm": "Apagar TODAS as amostras de voz guardadas? Não dá para desfazer.",
+    "cfg.voice_library.delete_sample_confirm": "Apagar a amostra de {name} de {sample}? Não dá para desfazer.",
     "cfg.clear": "Limpar",
     "cfg.system_default": "(padrão do sistema)",
     "cfg.section.hotkeys": "Atalhos",
@@ -726,6 +746,10 @@ _TRANSLATIONS["pt"] = {
     "cfg.my_name.hint": "Quem é o 'Eu' da transcrição, para as tarefas saírem com o seu nome.",
     "cfg.notes_dir": "Pasta das notas",
     "cfg.notes_dir.hint": "Onde as notas das reuniões (.md) são escritas. Pode ser uma pasta do seu vault do Obsidian.",
+    "cfg.organize_in_vault": "Organizar a nota no vault do Obsidian",
+    "cfg.organize_in_vault.hint": "Com as notas dentro de um vault: em 'tags' só entram tags que já existem nele (as palavras-chave livres vão para 'apolo_tags'), e a nota vai para '<projeto>/Apolo Notes'.",
+    "cfg.projects_dir": "Pasta dos projetos",
+    "cfg.projects_dir.hint": "Uma subpasta por projeto. Vazio = a pasta com 'projeto' no nome dentro do vault.",
     "cfg.ui_language": "Idioma da interface",
     "cfg.ui_language.hint": "Muda menus, configurações e mensagens. 'Automático' segue o sistema.",
     "cfg.overlay": "Indicador na tela",
@@ -834,7 +858,7 @@ _TRANSLATIONS["pt"] = {
     "cli.simulate.note": "Nota ao vivo: {path}",
     "cli.simulate.done": "Pronto. Nota: {path}",
     "err.quota": "Sua conta da OpenAI está sem crédito.",
-    "err.quota.detail": "Confira o billing em platform.openai.com. O áudio pendente fica no disco.",
+    "err.quota.detail": "Recarregue em platform.openai.com. O áudio pendente fica no disco e continua sozinho.",
     "err.transcription_failed": "Falha na transcrição.",
     "err.diarize_failed": "Não consegui separar as vozes.",
     "err.summary_failed": "Não consegui gerar o resumo.",
@@ -887,8 +911,15 @@ _TRANSLATIONS["pt"] = {
         "Responda com um objeto JSON com:\n"
         "- title: título curto e específico da reunião (até ~60 caracteres), "
         "sem a data.\n"
-        "- tags: de 1 a 5 tags em minúsculas, sem espaços (use hífen), sem "
-        "'#'.\n"
+        "- tags: até 5 tags. Se a mensagem listar 'Tags existentes', use SÓ "
+        "tags dessa lista, escritas exatamente como lá (nenhuma serve = "
+        "lista vazia). Sem essa lista, de 1 a 5 tags em minúsculas, sem "
+        "espaços (use hífen), sem '#'.\n"
+        "- keywords: de 1 a 5 palavras-chave do assunto, em minúsculas, sem "
+        "espaços (use hífen), sem '#'. Livres.\n"
+        "- projects: os projetos de que a reunião trata, SÓ da lista "
+        "'Projetos' da mensagem, escritos exatamente como lá, o principal "
+        "primeiro. Lista vazia se nenhum servir ou se não houver lista.\n"
         "- body_markdown: o corpo da nota em Markdown, com as seções pedidas "
         "acima, começando no primeiro '##'. Sem título e sem frontmatter."
     ),
@@ -902,6 +933,8 @@ _TRANSLATIONS["pt"] = {
     "summary.ctx.participants": "Participantes: {names}",
     "summary.ctx.me": "'{me}' na transcrição: {name}",
     "summary.ctx.voices": "As falas do áudio do computador já dizem quem falou: o nome, quando a voz foi reconhecida; '{voice}', 'B'... para pessoas diferentes que não foram identificadas; e '{others}' quando não se sabe.",
+    "summary.ctx.projects": "Projetos: {names}",
+    "summary.ctx.tags": "Tags existentes: {tags}",
     "summary.ctx.notes": "Anotações do usuário",
     "summary.ctx.no_notes": "(nenhuma)",
     "summary.ctx.transcript": "Transcrição",

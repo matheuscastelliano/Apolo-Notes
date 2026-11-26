@@ -44,6 +44,7 @@ from .secrets_store import get_api_key
 from .session.session import DONE, DRAINING, ERROR, PREPARING, READY, RECORDING, SUMMARIZING
 from .session.session import MeetingSession, SessionStatus
 from .session.spool import Spool, SpoolSession
+from .notes.vault import start_scan
 from .session.summary import FinalizeChoice, resummarize
 from .voices.identify import VoiceReview
 
@@ -82,7 +83,7 @@ StatusCallback = Callable[[Status], None]
 # thread; a UI abre a janela na main thread e chama o callback uma vez.
 AskFinalize = Callable[[SummaryPreset, float, Callable[[FinalizeChoice], None]], None]
 # "Quem e quem": (vozes, callback(nomes ou None, guardar)). Mesmas regras.
-AskVoices = Callable[[VoiceReview, Callable[[dict | None, bool], None]], None]
+AskVoices = Callable[[VoiceReview, Callable[[dict | None, set[str]], None]], None]
 
 
 class AppController:
@@ -288,6 +289,9 @@ class AppController:
             return
         if review.auto:
             choice.voice_names = review.suggested()
+            # Reconhecida sozinha nao vira amostra nova: ninguem conferiu, e um
+            # erro aqui ensinaria a biblioteca errado.
+            choice.save_voices = False
             log.info("Vozes reconhecidas sozinhas: %s", choice.voice_names)
             return
         if not ask or self._ask_voices is None:
@@ -308,7 +312,10 @@ class AppController:
             done.set()
         done.wait()
         choice.voice_names = answer.get("names") or {}
-        choice.save_voices = bool(answer.get("save", True)) and answer.get("names") is not None
+        save = answer.get("save") or set()
+        choice.save_voices = bool(save) and answer.get("names") is not None
+        choice.save_only = set(save)
+        log.info("Vozes: nomes %s, guardar %s", choice.voice_names, sorted(save))
 
     def _request_choice(self, session: MeetingSession, ask: bool = True) -> "_Choice":
         """Abre a janela de parada (ou nao, com on_stop = auto)."""
@@ -374,8 +381,10 @@ class AppController:
 
     def _resummarize(self, path: Path, choice: FinalizeChoice) -> None:
         try:
+            scan = start_scan(self.config)
             new_path = resummarize(
-                path, choice, self._make_provider(), str(self.config.get("my_name") or "")
+                path, choice, self._make_provider(), str(self.config.get("my_name") or ""),
+                scan.result(wait=15.0) if scan is not None else None,
             )
         except Exception as exc:
             self._fail(exc, "Falha ao resumir de novo")
@@ -519,6 +528,8 @@ def _queue_detail(s: SessionStatus) -> str:
         parts.append(t("status.pending", n=s.pending, seconds=round(s.pending_seconds)))
     if s.offline:
         parts.append(t("status.offline"))
+    elif s.no_credit:
+        parts.append(t("status.no_credit"))
     elif s.retrying:
         parts.append(t("status.retrying"))
     return " · ".join(parts)
@@ -535,6 +546,6 @@ def _recording_detail(s: SessionStatus) -> str:
     if s.others_silent and "sys" not in s.channel_problems:
         parts.append(t("status.others_silent"))
     # Fila normal (1-2 trechos) nao interessa; so quando esta acumulando.
-    if s.offline or s.retrying or s.pending > 3:
+    if s.offline or s.retrying or s.no_credit or s.pending > 3:
         parts.append(_queue_detail(s))
     return "\n".join(p for p in parts if p)

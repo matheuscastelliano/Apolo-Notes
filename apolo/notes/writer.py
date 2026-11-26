@@ -5,8 +5,9 @@ Regras:
     escreveu em "Minhas anotacoes" (render.extract_user_notes). O Apolo
     nunca apaga o que voce digitou ali.
   - Escrita atomica (.tmp + replace): o Obsidian nunca ve meia nota. No
-    Windows o replace pode falhar por um instante se outro programa estiver
-    com o arquivo aberto; tenta de novo algumas vezes antes de desistir.
+    Windows o replace pode falhar se outro programa estiver com o arquivo
+    aberto (o Obsidian/Sync segurou por mais de 1 s em 26/11); tenta de novo
+    com esperas crescentes, ~7 s no total, antes de desistir.
   - So escreve se o conteudo mudou: menos recargas no editor, menos chance
     de conflito com quem esta digitando (risco R5 do PLANO.md).
 """
@@ -28,8 +29,8 @@ from .render import Entry, NoteMeta
 
 log = logging.getLogger(__name__)
 
-_REPLACE_ATTEMPTS = 5
-_REPLACE_WAIT = 0.2
+# Esperas entre as tentativas de trocar o .tmp pela nota (arquivo preso).
+_REPLACE_WAITS = (0.2, 0.5, 1.0, 2.0, 3.0)
 
 
 def unique_path(directory: Path, filename: str) -> Path:
@@ -92,6 +93,30 @@ class NoteWriter:
             self.path = target
             return target
 
+    def move_to(self, directory: Path) -> Path:
+        """Leva a nota pronta para outra pasta (a do projeto). Se nao der, ela
+        fica onde esta - inteira - e so registra o motivo."""
+        with self._lock:
+            directory = Path(directory)
+            if directory == self.path.parent:
+                return self.path
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                target = unique_path(directory, self.path.name)
+                for wait in (*_REPLACE_WAITS, None):
+                    try:
+                        self.path.replace(target)
+                        break
+                    except PermissionError:
+                        if wait is None:
+                            raise
+                        time.sleep(wait)
+            except OSError as exc:
+                log.warning("Nao consegui mover a nota para %s: %s", directory, exc)
+                return self.path
+            self.path, self.directory = target, directory
+            return target
+
     def discard(self) -> None:
         """Apaga a nota (reuniao sem fala nenhuma)."""
         with self._lock:
@@ -109,16 +134,16 @@ class NoteWriter:
             tmp.write_text(text, encoding="utf-8", newline="\n")
         except OSError as exc:
             raise NoteError(t("err.note_write"), str(exc)) from exc
-        for attempt in range(_REPLACE_ATTEMPTS):
+        for wait in (*_REPLACE_WAITS, None):
             try:
                 tmp.replace(self.path)
                 self._last_written = text
                 return
             except PermissionError as exc:
-                if attempt == _REPLACE_ATTEMPTS - 1:
+                if wait is None:
                     tmp.unlink(missing_ok=True)
                     raise NoteError(t("err.note_write"), str(exc)) from exc
-                time.sleep(_REPLACE_WAIT)
+                time.sleep(wait)
             except OSError as exc:
                 tmp.unlink(missing_ok=True)
                 raise NoteError(t("err.note_write"), str(exc)) from exc

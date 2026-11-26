@@ -3,12 +3,14 @@
 Alguns workers (`stt_workers`, padrao 2) pegam sempre o trecho pendente mais
 antigo. O que acontece com cada falha:
 
-  TransientError (sem conexao, timeout, limite de uso, 5xx)
+  TransientError (sem conexao, timeout, limite de uso, sem credito, 5xx)
       -> o trecho volta para a fila e TODOS os workers esperam (backoff
          exponencial de 1 s ate 60 s, ou o que o servidor pedir). O audio
          continua no spool; nada se perde. `offline` liga para o overlay
-         mostrar "sem conexao" - so quando e mesmo falta de rede.
-  CredentialsError (chave invalida, sem credito, sem acesso ao modelo)
+         mostrar "sem conexao" - so quando e mesmo falta de rede - e
+         `no_credit` para mostrar "sem credito" (tenta de 2 em 2 min e
+         continua sozinho quando o credito volta).
+  CredentialsError (chave invalida, sem acesso ao modelo)
       -> nao adianta repetir: a fila PARA e guarda o erro em `fatal`. O
          audio fica no spool, para retomar depois de arrumar a chave.
   qualquer outro erro
@@ -27,7 +29,7 @@ import threading
 import time
 from typing import Callable
 
-from ..errors import ApoloError, CredentialsError, OfflineError, TransientError
+from ..errors import ApoloError, CredentialsError, OfflineError, QuotaError, TransientError
 from ..providers.base import Segment, Transcriber
 from .spool import SpooledSegment, SpoolSession
 from .transcript import SPEAKER_BY_CHANNEL, TranscriptStore
@@ -76,6 +78,7 @@ class SttQueue:
         # Estado para a UI.
         self.offline = False
         self.retrying = False  # falha passageira que nao e falta de rede
+        self.no_credit = False  # conta sem credito: espera recarregar
         self.fatal: ApoloError | None = None
         self.transcribed = 0
 
@@ -202,6 +205,7 @@ class SttQueue:
             self._failures = 0
         self.offline = False
         self.retrying = False
+        self.no_credit = False
         if text:
             self.store.add(Segment(seg.start, seg.end, speaker, text))
             self.transcribed += 1
@@ -215,7 +219,8 @@ class SttQueue:
             )
             self._paused_until = max(self._paused_until, time.monotonic() + delay)
         self.offline = isinstance(exc, OfflineError)
-        self.retrying = not self.offline
+        self.no_credit = isinstance(exc, QuotaError)
+        self.retrying = not (self.offline or self.no_credit)
         log.info("STT: %s; tentando de novo em %.0fs", exc.message, delay)
         self._requeue(seg)
 

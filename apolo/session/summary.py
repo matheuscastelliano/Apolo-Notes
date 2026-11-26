@@ -23,6 +23,7 @@ from ..errors import ApoloError, TransientError
 from ..i18n import t
 from ..notes.render import Entry, NoteMeta, format_transcript_for_llm
 from ..notes.reparse import is_placeholder_title, read_note
+from ..notes.vault import VaultContext
 from ..notes.writer import NoteWriter
 from ..presets import SummaryPreset
 from ..providers.base import Segment, Summarizer, SummaryRequest, SummaryResult
@@ -41,6 +42,8 @@ class FinalizeChoice:
     voice_names: dict[str, str] | None = None
     # Guardar a amostra de quem ganhou nome, para reconhecer da proxima vez.
     save_voices: bool = True
+    # So estas vozes viram amostra (as que voce ouviu ou nomeou). None = todas.
+    save_only: set[str] | None = None
 
 
 def build_summary(
@@ -50,10 +53,16 @@ def build_summary(
     user_notes: str,
     preset: SummaryPreset,
     my_name: str = "",
+    vault: VaultContext | None = None,
 ) -> tuple[SummaryResult, ApoloError | None]:
-    """Resumo pronto para o render_final, e o erro se o modelo falhou."""
+    """Resumo pronto para o render_final, e o erro se o modelo falhou.
+
+    Com `vault`: o modelo escolhe projetos e tags das listas do vault; o que
+    nao estiver nelas nao entra (tag inventada vira palavra-chave).
+    """
     fallback_title = meta.title or t("note.untitled")
     meta.my_name = my_name  # o rotulo "Eu" da transcricao vira o seu nome
+    meta.vault_tags = vault is not None
     if not any(isinstance(e, Segment) and e.text.strip() for e in entries):
         body = f"## {t('note.summary')}\n*{t('note.summary.nothing')}*"
         return SummaryResult(title=fallback_title, body_markdown=body), None
@@ -69,13 +78,33 @@ def build_summary(
         system_prompt=preset.system_prompt,
         model=preset.text_model,
         has_voices=any(isinstance(e, Segment) and e.voice for e in entries),
+        projects=list(vault.projects) if vault else [],
+        known_tags=list(vault.tags) if vault else [],
+        project_hints=dict(vault.hints) if vault else {},
     )
     try:
-        return summarize_with_retry(summarizer, request), None
+        result = summarize_with_retry(summarizer, request)
+        if vault is not None:
+            _fit_to_vault(result, vault)
+            meta.projects = list(result.projects)
+        return result, None
     except ApoloError as exc:
         log.error("Resumo falhou: %s", exc)
         body = f"## {t('note.summary')}\n*{t('note.summary.failed', error=exc.message)}*"
         return SummaryResult(title=fallback_title, body_markdown=body), exc
+
+
+def _fit_to_vault(result: SummaryResult, vault: VaultContext) -> None:
+    """So o que existe no vault: tags com a grafia dele, projetos da lista."""
+    tags, invented = vault.match_tags(result.tags)
+    result.tags = tags
+    result.keywords = [*result.keywords, *invented]
+    projects: list[str] = []
+    for name in result.projects:
+        project = vault.match_project(name)
+        if project and project not in projects:
+            projects.append(project)
+    result.projects = projects
 
 
 # Espera entre as tentativas do resumo, em segundos (3 tentativas no total).
@@ -107,6 +136,7 @@ def resummarize(
     choice: FinalizeChoice,
     summarizer: Summarizer,
     my_name: str = "",
+    vault: VaultContext | None = None,
 ) -> Path:
     """Refaz o resumo de uma nota pronta, com outro preset. Devolve o caminho.
 
@@ -122,7 +152,7 @@ def resummarize(
     meta.title = choice.title.strip() or ("" if placeholder else parsed.title)
 
     summary, error = build_summary(
-        summarizer, meta, parsed.entries, parsed.user_notes, choice.preset, my_name
+        summarizer, meta, parsed.entries, parsed.user_notes, choice.preset, my_name, vault
     )
     if error is not None:
         raise error  # a nota antiga continua como estava

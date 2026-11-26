@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from apolo.audio.chunker import Chunk
-from apolo.errors import CredentialsError, OfflineError, TranscriptionError
+from apolo.errors import CredentialsError, OfflineError, QuotaError, TranscriptionError
 from apolo.notes import render
 from apolo.notes.render import NOTES_END, NOTES_START, NoteMeta
 from apolo.notes.writer import NoteWriter, unique_path
@@ -139,6 +139,22 @@ def test_queue_survives_going_offline(tmp_path):
     assert spool.gaps() == []
 
 
+def test_queue_waits_out_of_credit_and_resumes_alone(tmp_path):
+    """26/11: credito acabou no meio de uma reuniao de 1 h. O audio espera e,
+    quando o credito volta, segue sem reiniciar nada; a UI diz 'sem credito'."""
+    seen = []
+    fake = FakeTranscriber(fail=[QuotaError("sem credito", retry_after=0.05)] * 2)
+    spool, store, q = make_queue(tmp_path, fake, workers=1)
+    q.on_change = lambda: seen.append((q.no_credit, q.retrying))
+    q.submit(spool.add("mic", 0.0, pcm(1)))
+    q.start()
+    assert q.wait_idle(timeout=5)
+    q.stop()
+    assert (True, False) in seen  # "sem credito", nao "instavel"
+    assert q.no_credit is False and q.fatal is None
+    assert [s.text for s in store.segments()] == ["fala 1"]
+
+
 def test_queue_stops_on_credentials_error_and_keeps_audio(tmp_path):
     fake = FakeTranscriber(fail=[CredentialsError("chave invalida")])
     spool, store, q = make_queue(tmp_path, fake, workers=1)
@@ -219,6 +235,28 @@ def test_writer_rename_for_final_title(tmp_path):
     new = writer.rename_for(m.start, "Daily do time: deploy")
     assert new.name == render.note_filename(m.start, "Daily do time: deploy")
     assert new.exists() and not (tmp_path / "2026-10-27 1430 - Gravando.md").exists()
+
+
+def test_writer_waits_for_a_locked_note(tmp_path, monkeypatch):
+    """26/11: o Obsidian segurou a nota por mais de 1 s ("Access is denied")."""
+    from pathlib import Path
+
+    from apolo.notes import writer as writer_module
+
+    m = meta()
+    writer = NoteWriter(tmp_path, m.start)
+    waits, real_replace, fails = [], Path.replace, iter([True] * 4)
+
+    def flaky_replace(self, target):
+        if next(fails, False):
+            raise PermissionError("[WinError 5] Access is denied")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr(writer_module.time, "sleep", waits.append)
+    writer.write_live(m, [Segment(1, 2, "me", "oi")])
+    assert "oi" in writer.path.read_text(encoding="utf-8")
+    assert waits == [0.2, 0.5, 1.0, 2.0]
 
 
 def test_unique_path(tmp_path):

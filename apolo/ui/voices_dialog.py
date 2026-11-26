@@ -16,6 +16,11 @@ digitar um nome novo. Dar o mesmo nome a duas vozes junta as duas.
 Fechar a janela (X ou Esc) nao poe nome em ninguem: as vozes saem como
 "Voz A", "Voz B". So o botao confirma, porque uma sugestao errada aceita
 sem ouvir trocaria os nomes na nota calada (fase V0).
+
+So vira amostra na biblioteca a voz que voce OUVIU (▶) ou cujo nome voce
+escolheu/digitou. Sugestao aceita sem ouvir vale para a nota, mas nao
+ensina a biblioteca: em 26/11 uma sugestao errada aceita assim virou a
+amostra mais nova do Fernando e da Vitoria, e o erro se repetiu.
 """
 
 from __future__ import annotations
@@ -42,11 +47,13 @@ def _speech_time(seconds: float) -> str:
 def ask_voices(
     root: tk.Tk,
     review: VoiceReview,
-    on_done: Callable[[dict[str, str] | None, bool], None],
+    on_done: Callable[[dict[str, str] | None, set[str]], None],
 ) -> tk.Toplevel:
     """Abre a janela e chama `on_done(nomes, guardar)` uma vez, na main thread.
 
     `nomes` = voz -> nome ("" = nao sei); None = fechou sem confirmar.
+    `guardar` = as vozes que podem virar amostra (ouvidas ou com o nome
+    mexido, e com a caixa "Guardar" marcada).
     """
     win = tk.Toplevel(root)
     win.title(t("voices.title"))
@@ -66,12 +73,19 @@ def ask_voices(
     unknown = t("voices.unknown")
     options = [*review.names, unknown]
     variables: dict[str, tk.StringVar] = {}
+    heard: set[str] = set()  # vozes que voce ouviu ou cujo nome mexeu
+    suggested = {v.id: v.suggestion or unknown for v in review.voices}
+
+    def play(voice) -> None:
+        heard.add(voice.id)
+        audio_play.play(voice.clip)
+
     row = 2
     for voice in review.voices:
         ttk.Label(frame, text=voice.label, font=bold).grid(row=row, column=0, sticky="w",
                                                            padx=(0, 8))
         ttk.Button(frame, text="▶", width=3,
-                   command=lambda clip=voice.clip: audio_play.play(clip)).grid(
+                   command=lambda v=voice: play(v)).grid(
             row=row, column=1, sticky="w", padx=(0, 8))
         var = tk.StringVar(value=voice.suggestion or unknown)
         variables[voice.id] = var
@@ -88,6 +102,13 @@ def ask_voices(
                       justify="left").grid(row=row, column=2, columnspan=2, sticky="w",
                                            pady=(0, 6))
             row += 1
+
+    if review.skipped:
+        short = ", ".join(f"{label} ({_speech_time(sec)})" for label, sec in review.skipped)
+        ttk.Label(frame, text=t("voices.skipped", voices=short), foreground=_HINT,
+                  wraplength=440, justify="left").grid(row=row, column=0, columnspan=4,
+                                                       sticky="w", pady=(6, 0))
+        row += 1
 
     save_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frame, text=t("voices.save"), variable=save_var).grid(
@@ -107,7 +128,10 @@ def ask_voices(
             for vid, var in variables.items():
                 value = var.get().strip()
                 names[vid] = "" if not value or value == unknown else value
-        save = bool(save_var.get())
+        save: set[str] = set()
+        if save_var.get():
+            save = {vid for vid, var in variables.items()
+                    if vid in heard or var.get().strip() != suggested[vid]}
         win.destroy()
         on_done(names, save)
 

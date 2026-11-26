@@ -71,15 +71,26 @@ class SummaryRequest:
     model: str | None = None
     # As falas dos "Outros" ja vem com o nome (ou "Voz A") de quem falou.
     has_voices: bool = False
+    # Vault do Obsidian (notes/vault.py): os projetos e as tags que ja
+    # existem. Vazio = nao ha vault, as tags saem livres como antes.
+    projects: list[str] = field(default_factory=list)
+    known_tags: list[str] = field(default_factory=list)
+    # Projeto -> pistas (tags e pessoas comuns nas notas dele).
+    project_hints: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class SummaryResult:
     # Vai para o frontmatter, o H1 e o nome do arquivo.
     title: str
+    # Com vault: so tags que ja existem nele. Sem vault: tags livres.
     tags: list[str] = field(default_factory=list)
     # Corpo da nota, comecando no primeiro "##". Sem H1 e sem frontmatter.
     body_markdown: str = ""
+    # Palavras-chave livres (vao para `apolo_tags` quando ha vault).
+    keywords: list[str] = field(default_factory=list)
+    # Projetos da reuniao, da lista do vault, o principal primeiro.
+    projects: list[str] = field(default_factory=list)
 
 
 def normalize_tags(tags: list) -> list[str]:

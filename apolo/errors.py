@@ -76,6 +76,12 @@ class RateLimitedError(TransientError):
     """Limite de requisicoes por minuto. Cota esgotada NAO entra aqui."""
 
 
+class QuotaError(TransientError):
+    """Conta sem credito. Passageiro do ponto de vista do app: o audio espera
+    no spool e a fila tenta de novo devagar, entao assim que o credito volta
+    a transcricao continua sozinha (sem precisar reiniciar nada)."""
+
+
 class ServerError(TransientError):
     """Erro 5xx do provedor."""
 

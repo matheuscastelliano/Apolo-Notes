@@ -406,6 +406,7 @@ def test_controller_auto_review_skips_the_window():
     choice = FinalizeChoice(PRESET)
     c._name_voices(FakeReviewSession(review), choice, ask=True)
     assert choice.voice_names == {"V1": "Ana"} and asked == []
+    assert choice.save_voices is False  # reconhecida sozinha nao vira amostra
 
 
 def test_controller_asks_and_waits_for_the_answer():
@@ -415,7 +416,7 @@ def test_controller_asks_and_waits_for_the_answer():
     review = VoiceReview([VoiceCandidate("V1", "Voz A", 9, clip, suggestion="Ana")])
 
     def ask(r, done):
-        threading.Timer(0.05, done, args=({"V1": "Bia"}, False)).start()
+        threading.Timer(0.05, done, args=({"V1": "Bia"}, set())).start()
 
     c = controller(ask)
     choice = FinalizeChoice(PRESET)
@@ -425,3 +426,32 @@ def test_controller_asks_and_waits_for_the_answer():
     unattended = FinalizeChoice(PRESET)
     c._name_voices(FakeReviewSession(review), unattended, ask=False)
     assert unattended.voice_names == {}
+
+
+def test_controller_saves_only_the_voices_you_checked():
+    from apolo.voices.identify import VoiceCandidate, VoiceReview
+
+    clip = np.zeros(10, dtype=np.int16)
+    review = VoiceReview([VoiceCandidate("V1", "Voz A", 9, clip, suggestion="Ana"),
+                          VoiceCandidate("V2", "Voz B", 9, clip, suggestion="Bia")])
+
+    def ask(r, done):
+        threading.Timer(0.05, done, args=({"V1": "Ana", "V2": "Bia"}, {"V2"})).start()
+
+    choice = FinalizeChoice(PRESET)
+    controller(ask)._name_voices(FakeReviewSession(review), choice, ask=True)
+    assert choice.save_voices is True and choice.save_only == {"V2"}
+
+
+def test_session_does_not_learn_unheard_suggestions(config, monkeypatch, tmp_path):
+    """26/11: sugestao errada aceita sem ouvir virou amostra de outra pessoa."""
+    provider = FakeProvider(window_voices)
+
+    def choose(s):
+        s.voice_review(["Ana", "Bia"])
+        return FinalizeChoice(PRESET, participants=["Bia", "Carla"],
+                              voice_names={"V1": "Ana", "V2": "Bia"}, save_only={"V2"})
+
+    s, note, lib = run(config, monkeypatch, tmp_path, provider, choose)
+    assert "] Ana:**" in note  # na nota o nome vale
+    assert lib.names() == ["Bia"]  # mas so a voz conferida ensina a biblioteca

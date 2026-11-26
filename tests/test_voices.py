@@ -164,6 +164,28 @@ def test_library_rename_merges_same_name_and_deletes(tmp_path):
     assert VoiceLibrary(tmp_path).names() == []
 
 
+def test_library_deletes_one_wrong_sample(tmp_path):
+    lib = VoiceLibrary(tmp_path)
+    lib.add_sample("Fernando", tone(freq=200))
+    person = lib.add_sample("Fernando", tone(freq=400))  # a errada, mais nova
+    wrong, good = person.samples
+    lib.delete_sample(person.id, wrong)
+    again = VoiceLibrary(tmp_path)
+    assert again.find("Fernando").samples == [good]
+    assert not (tmp_path / person.id / wrong).exists()
+    # A ultima amostra apagada leva a pessoa junto.
+    again.delete_sample(person.id, good)
+    assert VoiceLibrary(tmp_path).names() == []
+
+
+def test_sample_label_shows_when_it_was_recorded():
+    from apolo.ui.settings_window import _sample_label
+
+    assert _sample_label("20261126-112716.wav") == "2026-11-26 11:27"
+    assert _sample_label("20261123-180823-3.wav") == "2026-11-23 18:08"
+    assert _sample_label("estranho.wav") == "estranho"
+
+
 def test_library_ignores_missing_sample_files(tmp_path):
     lib = VoiceLibrary(tmp_path)
     person = lib.add_sample("Ana", tone())

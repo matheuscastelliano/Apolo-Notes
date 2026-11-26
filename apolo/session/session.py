@@ -41,6 +41,7 @@ from ..audio.sources import MicSource, SystemSource
 from ..errors import ApoloError, AudioError
 from ..i18n import t
 from ..notes.render import NoteMeta, guests
+from ..notes import vault as vault_module
 from ..notes.writer import NoteWriter
 from ..presets import SummaryPreset
 from ..providers.base import Segment, Summarizer, Transcriber
@@ -91,6 +92,8 @@ class SessionStatus:
     pending_seconds: float = 0.0
     offline: bool = False
     retrying: bool = False
+    # Conta da OpenAI sem credito: o audio espera no disco ate recarregar.
+    no_credit: bool = False
     # Canal que caiu ou nem abriu (o outro segue gravando).
     channel_problems: tuple[str, ...] = ()
     error: ApoloError | None = None
@@ -183,6 +186,7 @@ class MeetingSession:
         self.store: TranscriptStore | None = None
         self.writer: NoteWriter | None = None
         self.queue: SttQueue | None = None
+        self._vault_scan: vault_module.VaultScan | None = None
         self.tracker: VoiceTracker | None = None
         # "Quem esta na reuniao", informado durante a gravacao (opcional).
         self.expected_participants: list[str] = []
@@ -292,6 +296,12 @@ class MeetingSession:
         return session
 
     def _setup(self, started: datetime) -> None:
+        # Tags e projetos do vault: le durante a gravacao, usa no fim.
+        try:
+            self._vault_scan = vault_module.start_scan(self.config)
+        except Exception:
+            log.exception("Vault: nao consegui comecar a leitura")
+            self._vault_scan = None
         self.store = TranscriptStore(self.spool.dir)
         self.meta = NoteMeta(
             start=started,
@@ -580,6 +590,8 @@ class MeetingSession:
                 self.meta.participants.append(name)
         if choice.save_voices and names:
             for voice, name in names.items():
+                if choice.save_only is not None and voice not in choice.save_only:
+                    continue  # sugestao aceita sem ouvir: vale so para a nota
                 clip = self.tracker.clip_pcm(voice)
                 if clip is None or not len(clip):
                     continue
@@ -610,12 +622,17 @@ class MeetingSession:
             # Ninguem falou e voce nao anotou nada (iniciou sem querer, a
             # reuniao nem comecou): uma nota vazia so faria barulho no vault.
             return self._discard()
+        vault = self._vault_scan.result() if self._vault_scan is not None else None
         summary, self.summary_error = build_summary(
             summarizer, self.meta, entries, user_notes, preset,
-            str(self.config.get("my_name") or ""),
+            str(self.config.get("my_name") or ""), vault,
         )
         self.writer.write_final(self.meta, summary, entries)
         path = self.writer.rename_for(self.meta.start, self.meta.title or summary.title)
+        if self.meta.projects and self._vault_scan is not None \
+                and self._vault_scan.projects_dir is not None:
+            path = self.writer.move_to(vault_module.project_folder(
+                self._vault_scan.projects_dir, self.meta.projects[0]))
 
         # O audio era temporario. O que nao foi transcrito ja virou lacuna.
         try:
@@ -689,7 +706,9 @@ class MeetingSession:
             try:
                 self._write_note()
             except ApoloError as exc:
-                log.error("Nota: %s", exc)
+                # A proxima atualizacao tenta de novo (o texto nao foi marcado
+                # como escrito); o fim da reuniao escreve a nota inteira.
+                log.warning("Nota ao vivo: %s; tento de novo na proxima atualizacao", exc)
 
     def _write_note(self) -> None:
         if self.phase in (RECORDING, PREPARING):
@@ -717,6 +736,7 @@ class MeetingSession:
             pending_seconds=q.pending_seconds() if q else 0.0,
             offline=bool(q and q.offline),
             retrying=bool(q and q.retrying),
+            no_credit=bool(q and q.no_credit),
             channel_problems=problems,
             error=error or (q.fatal if q else None),
             summary_error=self.summary_error,

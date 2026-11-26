@@ -35,6 +35,16 @@ from ..presets import SummaryPreset
 
 log = logging.getLogger(__name__)
 
+
+def _sample_label(sample: str) -> str:
+    """'20261126-112716.wav' -> '2026-11-26 11:27' (quando foi gravada)."""
+    stem = sample.rsplit(".", 1)[0]
+    try:
+        day, clock = stem.split("-")[:2]
+        return f"{day[:4]}-{day[4:6]}-{day[6:8]} {clock[:2]}:{clock[2:4]}"
+    except (ValueError, IndexError):
+        return stem
+
 _STT_MODELS = ["gpt-transcribe"]
 _TEXT_MODELS = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
 
@@ -522,6 +532,15 @@ class SettingsWindow:
         row = self._field(where, row, "cfg.notes_dir",
                           self._path_row(where, self._notes_dir_var, "cfg.notes_dir"),
                           "cfg.notes_dir.hint")
+        self._organize_var = tk.BooleanVar(
+            value=bool(self._config.get("organize_in_vault", True))
+        )
+        row = self._check(where, row, "cfg.organize_in_vault", self._organize_var,
+                          "cfg.organize_in_vault.hint")
+        self._projects_dir_var = tk.StringVar(value=self._config.get("projects_dir") or "")
+        row = self._field(where, row, "cfg.projects_dir",
+                          self._path_row(where, self._projects_dir_var, "cfg.projects_dir"),
+                          "cfg.projects_dir.hint")
         self._my_name_var = tk.StringVar(value=self._config.get("my_name") or "")
         row = self._field(where, row, "cfg.my_name",
                           ttk.Entry(where, textvariable=self._my_name_var), "cfg.my_name.hint")
@@ -639,29 +658,39 @@ class SettingsWindow:
         return VoiceLibrary()
 
     def _refresh_voices(self) -> None:
+        """Cada pessoa com as amostras embaixo: da para ouvir e apagar uma so
+        (26/11: um nome errado aceito sem ouvir virou amostra de outra pessoa)."""
         tree = self._voice_tree
         tree.delete(*tree.get_children())
         for person in self._library().people():
             updated = person.updated[:16].replace("T", " ")
             tree.insert("", "end", iid=person.id, text=person.name,
                         values=(len(person.samples), updated))
+            for sample in person.samples:
+                tree.insert(person.id, "end", iid=f"{person.id}/{sample}",
+                            text=_sample_label(sample), values=("", ""))
 
     def _selected_person(self):
+        """(biblioteca, pessoa, amostra): amostra = None se a linha e a pessoa."""
         selection = self._voice_tree.selection()
         if not selection:
-            return None, None
+            return None, None, None
+        person_id, _, sample = selection[0].partition("/")
         library = self._library()
-        person = next((p for p in library.people() if p.id == selection[0]), None)
-        return library, person
+        person = next((p for p in library.people() if p.id == person_id), None)
+        return library, person, (sample or None)
 
     def _play_voice(self) -> None:
-        library, person = self._selected_person()
+        library, person, sample = self._selected_person()
         if person is None:
             return
         from ..voices.tracker import read_pcm
         from . import audio_play
 
-        for path in library.sample_paths(person):
+        paths = library.sample_paths(person)
+        if sample is not None:
+            paths = [p for p in paths if p.name == sample]
+        for path in paths:
             try:
                 audio_play.play(read_pcm(path))
                 return
@@ -669,7 +698,7 @@ class SettingsWindow:
                 log.warning("Nao consegui ler %s: %s", path, exc)
 
     def _rename_voice(self) -> None:
-        library, person = self._selected_person()
+        library, person, _ = self._selected_person()
         if person is None:
             return
         name = simpledialog.askstring("Apolo", t("cfg.voice_library.rename_prompt"),
@@ -679,8 +708,18 @@ class SettingsWindow:
             self._refresh_voices()
 
     def _delete_voice(self) -> None:
-        library, person = self._selected_person()
+        library, person, sample = self._selected_person()
         if person is None:
+            return
+        if sample is not None:
+            if messagebox.askyesno(
+                "Apolo",
+                t("cfg.voice_library.delete_sample_confirm", name=person.name,
+                  sample=_sample_label(sample)),
+                icon="warning", parent=self._win,
+            ):
+                library.delete_sample(person.id, sample)
+                self._refresh_voices()
             return
         if messagebox.askyesno("Apolo", t("cfg.voice_library.delete_confirm", name=person.name),
                                icon="warning", parent=self._win):
@@ -976,6 +1015,8 @@ class SettingsWindow:
             "loopback_device": None if out in ("", self._system_default) else out,
             "notes_dir": self._notes_dir_var.get().strip()
             or config_module.DEFAULT_CONFIG["notes_dir"],
+            "organize_in_vault": bool(self._organize_var.get()),
+            "projects_dir": self._projects_dir_var.get().strip(),
             "my_name": self._my_name_var.get().strip(),
             "transcript_block": self._selected(self._block_var, self._block_labels, "callout"),
             "default_preset": default_id,

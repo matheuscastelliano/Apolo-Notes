@@ -59,6 +59,12 @@ class NoteMeta:
     # Voz dos "Outros" -> nome confirmado ("V1" -> "Marcos"). Voz sem nome
     # aparece como "Voz A". Tambem nao vai para o frontmatter.
     voice_names: dict[str, str] = field(default_factory=dict)
+    # Projetos do vault da reuniao (o principal primeiro): `projects:
+    # ["[[Vertis]]"]` no frontmatter.
+    projects: list[str] = field(default_factory=list)
+    # A nota esta num vault do Obsidian: `tags` so com tags que ja existem
+    # nele, e as do Apolo (meeting, preset, palavras-chave) em `apolo_tags`.
+    vault_tags: bool = False
 
 
 # ------------------------------------------------------------------ notas
@@ -70,7 +76,7 @@ def render_live(meta: NoteMeta, segments: Iterable[Entry], user_notes: str = "")
     return _render(
         meta,
         title=title,
-        tags=_tags(meta, []),
+        tags=[] if meta.vault_tags else _tags(meta, []),
         body=summary,
         segments=segments,
         user_notes=user_notes,
@@ -85,10 +91,15 @@ def render_final(
     user_notes: str = "",
 ) -> str:
     title = meta.title or summary.title or t("note.untitled")
+    if meta.vault_tags:
+        tags = list(summary.tags)  # ja filtradas, com a grafia do vault
+    else:
+        tags = _tags(meta, [*summary.tags, *summary.keywords])
     return _render(
         meta,
         title=title,
-        tags=_tags(meta, summary.tags),
+        tags=tags,
+        keywords=summary.keywords,
         body=summary.body_markdown.strip(),
         segments=segments,
         user_notes=user_notes,
@@ -101,13 +112,14 @@ def _render(
     *,
     title: str,
     tags: list[str],
+    keywords: list[str] = (),
     body: str,
     segments: Iterable[Entry],
     user_notes: str,
     live: bool,
 ) -> str:
     parts = [
-        _frontmatter(meta, title, tags),
+        _frontmatter(meta, title, tags, keywords),
         f"# {title}",
         "> " + _header_line(meta, live),
     ]
@@ -118,7 +130,7 @@ def _render(
     return "\n\n".join(parts) + "\n"
 
 
-def _frontmatter(meta: NoteMeta, title: str, tags: list[str]) -> str:
+def _frontmatter(meta: NoteMeta, title: str, tags: list[str], keywords=()) -> str:
     lines = [
         "---",
         f"title: {_yaml_scalar(title)}",
@@ -129,6 +141,11 @@ def _frontmatter(meta: NoteMeta, title: str, tags: list[str]) -> str:
         lines.append(f"preset: {_yaml_scalar(meta.preset_id)}")
     lines.append(f"participants: {_yaml_list(meta.participants)}")
     lines.append(f"tags: {_yaml_list(tags)}")
+    if meta.vault_tags:
+        lines.append(f"apolo_tags: {_yaml_list(_tags(meta, list(keywords)))}")
+    if meta.projects:
+        links = ", ".join('"[[' + p.replace('"', "") + ']]"' for p in meta.projects)
+        lines.append(f"projects: [{links}]")
     lines.append("app: apolo")
     lines.append("---")
     return "\n".join(lines)

@@ -31,6 +31,7 @@ from ..errors import (
     DiarizationError,
     OfflineError,
     ProviderTimeoutError,
+    QuotaError,
     RateLimitedError,
     ServerError,
     SummaryError,
@@ -55,9 +56,11 @@ _SUMMARY_SCHEMA = {
             "properties": {
                 "title": {"type": "string"},
                 "tags": {"type": "array", "items": {"type": "string"}},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "projects": {"type": "array", "items": {"type": "string"}},
                 "body_markdown": {"type": "string"},
             },
-            "required": ["title", "tags", "body_markdown"],
+            "required": ["title", "tags", "keywords", "projects", "body_markdown"],
             "additionalProperties": False,
         },
     },
@@ -300,9 +303,12 @@ class OpenAIProvider:
         if isinstance(exc, openai.PermissionDeniedError):
             return CredentialsError(t("err.no_model_access"), str(exc))
         if isinstance(exc, openai.RateLimitError):
-            # 429 tambem e "sem credito". Esse nao passa esperando.
-            if getattr(exc, "code", None) == "insufficient_quota":
-                return CredentialsError(t("err.quota"), t("err.quota.detail"))
+            # 429 tambem e "sem credito". A OpenAI ja mandou isso no `code`
+            # ("insufficient_quota") e hoje manda no `type`, com o code
+            # "credit_balance_exhausted". Nao passa em 1 min: tenta devagar.
+            if _out_of_credit(exc):
+                return QuotaError(t("err.quota"), t("err.quota.detail"),
+                                  retry_after=QUOTA_RETRY_SECONDS)
             return RateLimitedError(
                 t("err.rate_limit"), retry_after=_retry_after(exc)
             )
@@ -354,6 +360,12 @@ def summary_user_message(request: SummaryRequest) -> str:
     if request.has_voices:
         lines.append(t("summary.ctx.voices", others=t("speaker.others"),
                        voice=t("speaker.voice", letter="A")))
+    if request.projects:
+        hints = request.project_hints
+        names = "; ".join(f"{p} ({hints[p]})" if hints.get(p) else p for p in request.projects)
+        lines.append(t("summary.ctx.projects", names=names))
+    if request.known_tags:
+        lines.append(t("summary.ctx.tags", tags=", ".join(request.known_tags)))
 
     parts = ["\n".join(lines)] if lines else []
     notes = request.user_notes.strip()
@@ -376,12 +388,26 @@ def _parse_json_result(content: str) -> SummaryResult | None:
     body = str(data.get("body_markdown") or "").strip()
     if not body:
         return None
-    tags = data.get("tags")
     return SummaryResult(
         title=_clean_title(str(data.get("title") or "")),
-        tags=normalize_tags(tags if isinstance(tags, list) else []),
+        # Sem normalizar aqui: a tag do vault tem a grafia dele ("SmartOSS").
+        tags=_strings(data.get("tags")),
         body_markdown=body,
+        keywords=_strings(data.get("keywords")),
+        projects=_strings(data.get("projects")),
     )
+
+
+def _strings(value) -> list[str]:
+    """Lista de textos sem '#', sem vazios e sem repetir (ignorando caixa)."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = str(item).strip().lstrip("#").strip()
+        if text and text.casefold() not in {o.casefold() for o in out}:
+            out.append(text)
+    return out
 
 
 def parse_markdown_result(content: str) -> SummaryResult:
@@ -409,6 +435,19 @@ def _clean_title(title: str) -> str:
 def _mentions_format(message: str) -> bool:
     message = message.lower()
     return "response_format" in message or "json_schema" in message
+
+
+# Sem credito: espera entre as tentativas (o usuario precisa ir recarregar).
+QUOTA_RETRY_SECONDS = 120.0
+_QUOTA_MARKERS = {"insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"}
+
+
+def _out_of_credit(exc: Exception) -> bool:
+    found = {getattr(exc, "code", None), getattr(exc, "type", None)}
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        found |= {body.get("code"), body.get("type")}
+    return bool(found & _QUOTA_MARKERS)
 
 
 def _retry_after(exc: Exception) -> float | None:
