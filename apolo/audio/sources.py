@@ -153,9 +153,35 @@ def _soundcard():
                 original(message, category, filename, lineno, file, line)
 
             warnings.showwarning = showwarning
+        if sys.platform == "win32" and "soundcard" not in sys.modules:
+            _import_on_keeper_thread()
     import soundcard
 
     return soundcard
+
+
+def _import_on_keeper_thread() -> None:
+    """Importa o soundcard numa thread que vive enquanto o app viver.
+
+    O soundcard inicializa o COM (MTA) so na thread que o importa. Na 1a
+    gravacao era a thread do canal "Outros", que acaba quando a gravacao
+    termina; com ela ia embora o MTA, e na 2a gravacao do mesmo app o
+    loopback falhava com 0x800401F0 (CO_E_NOTINITIALIZED) e a nota saia so
+    com o "Eu" (27/11). Com a thread que importou parada para sempre, o MTA
+    fica de pe e toda thread sem COM proprio cai nele.
+    """
+    done = threading.Event()
+
+    def hold() -> None:
+        try:
+            import soundcard  # noqa: F401
+        except Exception:
+            pass  # o import de novo, na thread que chamou, mostra o erro
+        done.set()
+        threading.Event().wait()  # para sempre (thread daemon)
+
+    threading.Thread(target=hold, name="apolo-com", daemon=True).start()
+    done.wait(timeout=30.0)
 
 
 # ------------------------------------------------------------------ fontes

@@ -358,3 +358,28 @@ def test_others_silent_needs_my_speech(config, monkeypatch):
     s.check_limits(now=s.started_at + 600)
     assert not s.others_silent
     s.stop()
+
+
+def test_soundcard_is_imported_on_a_thread_that_never_ends(monkeypatch, tmp_path):
+    """27/11: a 2a gravacao do mesmo app saia sem "Outros" (0x800401F0).
+
+    O soundcard abre o COM so na thread que o importa; se ela acaba (fim da
+    1a gravacao), o loopback das proximas falha. Ele tem de ser importado
+    numa thread que fica viva.
+    """
+    (tmp_path / "soundcard.py").write_text(
+        "import threading\nimported_on = threading.current_thread()\n", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(__import__("sys").modules, "soundcard", raising=False)
+    monkeypatch.setattr("sys.platform", "win32")
+
+    holder: list = []
+    worker = threading.Thread(target=lambda: holder.append(sources_module._soundcard()))
+    worker.start()
+    worker.join()  # a "gravacao" acabou
+
+    __import__("sys").modules.pop("soundcard", None)  # nao deixa o falso para os outros testes
+    keeper = holder[0].imported_on
+    assert keeper is not worker and keeper.name == "apolo-com"
+    assert keeper.is_alive() and keeper.daemon
